@@ -29,15 +29,16 @@
    # trading도 동일하게
    ```
 
-2. 스키마 적용 (별도 마이그레이션 러너 없음 — sql 파일을 직접 적용):
+2. 환경변수: `.env.example`을 `.env`로 복사해 값 채우기.
+   `TURSO_*` 토큰은 서버 전용 — `NEXT_PUBLIC_` 접두사 금지.
+
+3. 스키마 적용:
 
    ```sh
-   turso db shell krx-market < db/migrations/krx_market/001_init.sql
-   turso db shell trading < db/migrations/trading/001_init.sql
+   pnpm migrate   # .env의 Turso에 적용, env 없으면 로컬 file DB(.data/)에 적용
    ```
 
-3. 환경변수: `.env.example`을 `.env`로 복사해 값 채우기.
-   `TURSO_*` 토큰은 서버 전용 — `NEXT_PUBLIC_` 접두사 금지.
+> Windows에서 turso CLI는 WSL로 사용한다 (`~/.turso/turso`).
 
 ## 실행
 
@@ -94,7 +95,7 @@ uv run python test_parse.py
       + 디자인 시안(`K-PaperTrade.dc.html`) TS 포팅 — 현재 화면은 **더미 데이터**
 - [x] 2단계: NaverProvider(진짜 분봉 OHLC) + 전 종목 백필 + parquet/Release + 일봉·수급·지수 수집 (GitHub Actions)
 - [x] 3단계: 체결 엔진(`lib/engine/`, 순수 함수) + vitest 18케이스 — [docs/engine.md](docs/engine.md)
-- [ ] 4단계: API Routes + 리플레이 세션 (서버측 커서 컷)
+- [x] 4단계: API Routes(zod) + 리플레이 세션(서버측 커서 컷) + 인증 미들웨어 — [docs/api.md](docs/api.md)
 - [ ] 5단계: 화면 실데이터 연결 + 장중 폴링
 - [ ] 6단계: 성과 지표 + ai_decisions 수익률 배치
 
