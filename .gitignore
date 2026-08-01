@@ -18,3 +18,8 @@ __pycache__/
 # 수집 데이터 (parquet는 GitHub Release로만 배포)
 data/
 *.parquet
+.gstack/
+
+# Playwright
+test-results/
+playwright-report/

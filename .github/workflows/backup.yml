@@ -1,0 +1,35 @@
+# 주 1회 Turso 덤프를 저장소에 커밋 — 벤더 리스크 대비 (핸드오프 §10).
+# 일요일 05:00 KST = 토요일 20:00 UTC. 시크릿: TURSO_API_TOKEN (플랫폼 API 토큰).
+name: backup
+
+on:
+  schedule:
+    - cron: "0 20 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: turso CLI 설치
+        run: curl -sSfL https://get.tur.so/install.sh | bash
+      - name: 덤프 생성
+        env:
+          TURSO_API_TOKEN: ${{ secrets.TURSO_API_TOKEN }}
+        run: |
+          mkdir -p backups
+          ~/.turso/turso db shell krx-market .dump | gzip > backups/krx_market.sql.gz
+          ~/.turso/turso db shell trading .dump | gzip > backups/trading.sql.gz
+          ls -la backups
+      - name: 커밋
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backups
+          git diff --cached --quiet || git commit -m "backup: 주간 Turso 덤프 $(date -u +%F)"
+          git push
