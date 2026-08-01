@@ -1,30 +1,41 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { curve, FILLS, HOLDINGS, seedOf, series, START_CASH, STOCKS } from "@/lib/sim";
+// 대시보드 — 실데이터 (portfolio·orders·performance API)
+import { useCallback, useEffect, useRef, useState } from "react";
 import { clr, DOWN, NEUTRAL, pct, sgnWon, UP, won } from "@/lib/format";
-import { seg, setupCanvas } from "@/lib/ui";
+import { setupCanvas } from "@/lib/ui";
+import { j, type OrderRow, type Portfolio } from "./client";
 
-type Period = "1M" | "3M" | "1Y";
+type Account = { id: number; name: string; initial_cash: number };
+type Snapshot = { ts: string; equity: number };
+type IndexRow = { code: string; date: string; close: number };
 
-function drawDash(cv: HTMLCanvasElement, period: Period, account: string) {
+function drawCurve(cv: HTMLCanvasElement, snaps: Snapshot[], indices: IndexRow[], initial: number) {
   const c = setupCanvas(cv);
   if (!c) return;
   const { g, W, H } = c;
-  const n = { "1M": 22, "3M": 66, "1Y": 252 }[period];
-  const seed = seedOf("dash" + period + account);
-  const empty = account === "fresh";
+  g.clearRect(0, 0, W, H);
+
+  // 수익률(%) 곡선으로 정규화
+  const port = snaps.map((s) => (s.equity / initial - 1) * 100);
+  const mkIdx = (code: string) => {
+    const rows = indices.filter((r) => r.code === code);
+    if (rows.length < 2) return [];
+    const base = rows[0].close;
+    return rows.map((r) => (r.close / base - 1) * 100);
+  };
   const lines = [
-    { d: curve(seed + 1, n, empty ? 0 : 0.11, empty ? 0.02 : 0.9), col: UP, w: 2 },
-    { d: curve(seed + 2, n, 0.05, 0.6), col: NEUTRAL, w: 1.5 },
-    { d: curve(seed + 3, n, 0.03, 0.9), col: DOWN, w: 1.5 },
-  ];
+    { d: port, col: UP, w: 2 },
+    { d: mkIdx("KOSPI"), col: NEUTRAL, w: 1.5 },
+    { d: mkIdx("KOSDAQ"), col: DOWN, w: 1.5 },
+  ].filter((l) => l.d.length >= 2);
+  if (!lines.length) return;
+
   const all = lines.flatMap((l) => l.d);
   const mn = Math.min(...all);
   const mx = Math.max(...all);
   const pad = (mx - mn) * 0.1 || 1;
   const y = (v: number) => 8 + (H - 30) * (1 - (v - mn + pad) / (mx - mn + 2 * pad));
-  const x = (i: number) => 4 + ((W - 52) * i) / (n - 1);
   g.strokeStyle = "#1F1F26";
   g.fillStyle = "#5C5E68";
   g.textAlign = "left";
@@ -38,100 +49,85 @@ function drawDash(cv: HTMLCanvasElement, period: Period, account: string) {
     g.fillText(pct(v).replace("−", "-"), W - 44, yy + 4);
   }
   for (const L of lines) {
+    const x = (i: number) => 4 + ((W - 52) * i) / Math.max(1, L.d.length - 1);
     g.strokeStyle = L.col;
     g.lineWidth = L.w;
     g.beginPath();
     L.d.forEach((v, i) => (i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v))));
     g.stroke();
   }
-  g.fillStyle = "#5C5E68";
-  g.textAlign = "center";
-  const labels: Record<Period, string[]> = {
-    "1M": ["7/1", "7/10", "7/20", "7/31"],
-    "3M": ["5월", "6월", "7월", "8월"],
-    "1Y": ["25.9", "25.12", "26.3", "26.7"],
-  };
-  labels[period].forEach((t, i) => g.fillText(t, x(Math.round(((n - 1) * i) / 3)), H - 4));
   g.lineWidth = 1;
 }
 
 const th: React.CSSProperties = {
-  color: "#8B8D98",
-  fontWeight: 500,
-  fontSize: 12,
-  padding: "6px 0",
-  borderBottom: "1px solid #1F1F26",
-  textAlign: "right",
+  color: "#8B8D98", fontWeight: 500, fontSize: 12, padding: "6px 0",
+  borderBottom: "1px solid #1F1F26", textAlign: "right",
 };
 const td: React.CSSProperties = {
-  padding: "10px 0",
-  borderBottom: "1px solid #1A1A20",
-  textAlign: "right",
+  padding: "10px 0", borderBottom: "1px solid #1A1A20", textAlign: "right",
 };
 
-export default function Dashboard({ account, active }: { account: string; active: boolean }) {
-  const [period, setPeriod] = useState<Period>("1M");
+export default function Dashboard({
+  account,
+  active,
+  onOpenStock,
+}: {
+  account: Account | null;
+  active: boolean;
+  onOpenStock: (ticker: string) => void;
+}) {
+  const [pf, setPf] = useState<Portfolio | null>(null);
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [perf, setPerf] = useState<{ snapshots: Snapshot[]; indices: IndexRow[] }>({ snapshots: [], indices: [] });
+  const [names, setNames] = useState<Record<string, string>>({});
   const ref = useRef<HTMLCanvasElement>(null);
 
+  const load = useCallback(async () => {
+    if (!account) return;
+    const [p, o, pe] = await Promise.all([
+      j<Portfolio>(`/api/v1/accounts/${account.id}/portfolio`),
+      j<{ orders: OrderRow[] }>(`/api/v1/orders?account_id=${account.id}`),
+      j<{ snapshots: Snapshot[]; indices: IndexRow[] }>(`/api/v1/accounts/${account.id}/performance`),
+    ]);
+    setPf(p);
+    setOrders(o.orders);
+    setPerf(pe);
+    const tickers = [...new Set(p.positions.map((x) => x.ticker))];
+    const nm: Record<string, string> = {};
+    await Promise.all(
+      tickers.map(async (t) => {
+        const r = await j<{ results: { ticker: string; name: string }[] }>(`/api/v1/stocks/search?q=${t}`);
+        if (r.results[0]) nm[t] = r.results[0].name;
+      }),
+    );
+    setNames(nm);
+  }, [account]);
+
   useEffect(() => {
-    if (!active) return;
-    const draw = () => ref.current && drawDash(ref.current, period, account);
+    if (active) load().catch(() => {});
+  }, [active, load]);
+
+  useEffect(() => {
+    if (!active || !account) return;
+    const draw = () => ref.current && drawCurve(ref.current, perf.snapshots, perf.indices, account.initial_cash);
     draw();
     window.addEventListener("resize", draw);
     return () => window.removeEventListener("resize", draw);
-  }, [period, account, active]);
+  }, [active, perf, account]);
 
-  const empty = account === "fresh";
-  const lastClose = (code: string) => series(code, "2026-07-31")[390].c;
+  if (!account) return null;
+  const plSum = pf?.positions.reduce((s, p) => s + p.pnl, 0) ?? 0;
+  const costSum = pf?.positions.reduce((s, p) => s + p.avgPrice * p.qty, 0) ?? 0;
+  const equity = pf?.equity ?? account.initial_cash;
+  const totalRet = (equity / account.initial_cash - 1) * 100;
+  const fills = orders.filter((o) => o.status === "FILLED").slice(0, 5);
+  const hasCurve = perf.snapshots.length >= 2;
 
-  let evalSum = 0;
-  let plSum = 0;
-  const holdRows = empty
-    ? []
-    : HOLDINGS.map((h) => {
-        const st = STOCKS.find((x) => x.code === h.code)!;
-        const cur = lastClose(h.code);
-        const pl = (cur - h.avg) * h.qty;
-        const rate = (cur / h.avg - 1) * 100;
-        evalSum += cur * h.qty;
-        plSum += pl;
-        return {
-          name: st.name,
-          qty: h.qty.toLocaleString("ko-KR"),
-          avg: won(h.avg),
-          cur: won(cur),
-          pl: sgnWon(pl),
-          rate: pct(rate),
-          color: clr(pl),
-        };
-      });
-
-  const cash = empty ? START_CASH : 12_450_000;
-  const total = cash + evalSum;
-  const dayRate = empty ? 0 : 0.84;
   const metricCards = [
-    {
-      label: "총자산",
-      value: won(total),
-      sub: empty ? "초기 자본" : "전일 대비 " + sgnWon((total * dayRate) / 100),
-      color: "#E8E8EC",
-      subColor: empty ? "#5C5E68" : clr(dayRate),
-    },
-    {
-      label: "평가손익",
-      value: sgnWon(plSum),
-      sub: empty ? "보유종목 없음" : pct((plSum / (evalSum - plSum)) * 100),
-      color: clr(plSum),
-      subColor: clr(plSum),
-    },
-    { label: "현금", value: won(cash), sub: "주문 가능 금액", color: "#E8E8EC", subColor: "#5C5E68" },
-    {
-      label: "일간수익률",
-      value: pct(dayRate),
-      sub: "KOSPI " + pct(0.31),
-      color: clr(dayRate),
-      subColor: "#5C5E68",
-    },
+    { label: "총자산", value: won(equity), sub: `초기 자본 ${won(account.initial_cash)}`, color: "#E8E8EC", subColor: "#5C5E68" },
+    { label: "평가손익", value: sgnWon(plSum), sub: costSum > 0 ? pct((plSum / costSum) * 100) : "보유종목 없음", color: clr(plSum), subColor: clr(plSum) },
+    { label: "현금", value: won(pf?.cash ?? account.initial_cash), sub: "주문 가능 금액", color: "#E8E8EC", subColor: "#5C5E68" },
+    { label: "누적수익률", value: pct(totalRet), sub: "초기 자본 대비", color: clr(totalRet), subColor: "#5C5E68" },
   ];
 
   return (
@@ -162,21 +158,20 @@ export default function Dashboard({ account, active }: { account: string; active
               </span>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 4, background: "#111114", borderRadius: 9, padding: 3 }}>
-            {(["1M", "3M", "1Y"] as Period[]).map((p) => (
-              <button key={p} onClick={() => setPeriod(p)} style={seg(period === p)}>
-                {p}
-              </button>
-            ))}
-          </div>
         </div>
-        <canvas ref={ref} style={{ width: "100%", height: 250, display: "block" }} />
+        {hasCurve ? (
+          <canvas ref={ref} style={{ width: "100%", height: 250, display: "block" }} />
+        ) : (
+          <div style={{ height: 250, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "#5C5E68" }}>
+            일일 스냅샷이 2개 이상 쌓이면 수익률 곡선이 표시됩니다 (장 마감 배치에서 기록)
+          </div>
+        )}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 16, alignItems: "start" }}>
         <div className="card" style={{ padding: 18 }}>
           <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>보유종목</div>
-          {holdRows.length > 0 ? (
+          {pf && pf.positions.length > 0 ? (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr>
@@ -189,14 +184,14 @@ export default function Dashboard({ account, active }: { account: string; active
                 </tr>
               </thead>
               <tbody>
-                {holdRows.map((h) => (
-                  <tr key={h.name}>
-                    <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{h.name}</td>
-                    <td style={{ ...td, color: "#B7B9C2" }}>{h.qty}</td>
-                    <td style={{ ...td, color: "#B7B9C2" }}>{h.avg}</td>
-                    <td style={td}>{h.cur}</td>
-                    <td style={{ ...td, color: h.color }}>{h.pl}</td>
-                    <td style={{ ...td, color: h.color, fontWeight: 600 }}>{h.rate}</td>
+                {pf.positions.map((h) => (
+                  <tr key={h.ticker} className="rowHover" style={{ cursor: "pointer" }} onClick={() => onOpenStock(h.ticker)}>
+                    <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{names[h.ticker] ?? h.ticker}</td>
+                    <td style={{ ...td, color: "#B7B9C2" }}>{h.qty.toLocaleString("ko-KR")}</td>
+                    <td style={{ ...td, color: "#B7B9C2" }}>{won(h.avgPrice)}</td>
+                    <td style={td}>{won(h.currentPrice)}</td>
+                    <td style={{ ...td, color: clr(h.pnl) }}>{sgnWon(h.pnl)}</td>
+                    <td style={{ ...td, color: clr(h.pnl), fontWeight: 600 }}>{pct(h.returnPct)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -214,25 +209,24 @@ export default function Dashboard({ account, active }: { account: string; active
 
         <div className="card" style={{ padding: 18 }}>
           <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>최근 체결</div>
-          {!empty ? (
+          {fills.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column" }}>
-              {FILLS.map((f, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: "1px solid #1A1A20", fontSize: 13 }}>
+              {fills.map((f) => (
+                <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: "1px solid #1A1A20", fontSize: 13 }}>
                   <span
                     style={{
-                      fontSize: 11,
-                      fontWeight: 700,
-                      padding: "2px 7px",
-                      borderRadius: 6,
-                      color: f.side === "매수" ? UP : DOWN,
-                      background: f.side === "매수" ? "rgba(240,68,82,0.12)" : "rgba(49,130,246,0.12)",
+                      fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 6,
+                      color: f.side === "BUY" ? UP : DOWN,
+                      background: f.side === "BUY" ? "rgba(240,68,82,0.12)" : "rgba(49,130,246,0.12)",
                     }}
                   >
-                    {f.side}
+                    {f.side === "BUY" ? "매수" : "매도"}
                   </span>
-                  <span style={{ fontWeight: 600, flex: 1 }}>{f.name}</span>
-                  <span style={{ color: "#B7B9C2" }}>{f.detail}</span>
-                  <span style={{ color: "#5C5E68", fontSize: 12 }}>{f.time}</span>
+                  <span style={{ fontWeight: 600, flex: 1 }}>{names[f.ticker] ?? f.ticker}</span>
+                  <span style={{ color: "#B7B9C2" }}>
+                    {f.exec_qty}주 · {won(f.exec_price ?? 0)}
+                  </span>
+                  <span style={{ color: "#5C5E68", fontSize: 12 }}>{f.executed_at?.slice(5)}</span>
                 </div>
               ))}
             </div>

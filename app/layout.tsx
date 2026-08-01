@@ -23,7 +23,7 @@ export default function RootLayout({
         {children}
         <footer className="disclaimer">
           본 서비스는 모의투자·교육용 시뮬레이터입니다. 실제 매매가 이루어지지
-          않으며 투자 권유가 아닙니다. 현재 화면은 더미 데이터로 동작합니다.
+          않으며 투자 권유·종목 추천이 아닙니다. 시세 출처: 네이버 금융(비공식)·KRX.
         </footer>
       </body>
     </html>
