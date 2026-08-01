@@ -96,7 +96,7 @@ uv run python test_parse.py
 - [x] 2단계: NaverProvider(진짜 분봉 OHLC) + 전 종목 백필 + parquet/Release + 일봉·수급·지수 수집 (GitHub Actions)
 - [x] 3단계: 체결 엔진(`lib/engine/`, 순수 함수) + vitest 18케이스 — [docs/engine.md](docs/engine.md)
 - [x] 4단계: API Routes(zod) + 리플레이 세션(서버측 커서 컷) + 인증 미들웨어 — [docs/api.md](docs/api.md)
-- [ ] 5단계: 화면 실데이터 연결 + 장중 폴링
+- [x] 5단계: 화면 5개 실데이터 연결 + 장중 폴링(장시간 유틸) — [docs/screens.md](docs/screens.md)
 - [ ] 6단계: 성과 지표 + ai_decisions 수익률 배치
 
 v1 범위 밖(미구현): VI(변동성완화장치), 동시호가, 공매도, 실거래 연동.

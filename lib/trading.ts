@@ -101,6 +101,7 @@ export type SettleResult = {
   reason?: string;
   price?: number;
   qty?: number;
+  ts?: string; // 체결 분봉 시각
 };
 
 /**
@@ -193,7 +194,7 @@ export async function settleOwnerOrders(owner: Owner, cursor?: string): Promise<
       );
     }
     await db.batch(stmts, "write");
-    results.push({ orderId: Number(row.id), ticker, side: order.side, status: "FILLED", price, qty });
+    results.push({ orderId: Number(row.id), ticker, side: order.side, status: "FILLED", price, qty, ts });
   }
   return results;
 }
