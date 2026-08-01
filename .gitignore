@@ -19,3 +19,7 @@ __pycache__/
 data/
 *.parquet
 .gstack/
+
+# Playwright
+test-results/
+playwright-report/
