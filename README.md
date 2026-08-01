@@ -45,7 +45,8 @@
 ```sh
 pnpm install
 pnpm dev        # http://localhost:3000
-pnpm test       # 체결 엔진 vitest
+pnpm test       # 단위 테스트 (vitest — 엔진·지표)
+pnpm e2e        # Playwright e2e (dev 서버 자동 기동, Turso+로컬 parquet 필요)
 ```
 
 상세 문서는 [docs/](docs/) 참고 — [데이터 파이프라인](docs/data-pipeline.md) · [체결 엔진](docs/engine.md)
