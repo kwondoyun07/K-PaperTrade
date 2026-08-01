@@ -1,0 +1,7 @@
+[project]
+name = "collector"
+version = "0.1.0"
+description = "KRX 시세 수집 배치 — 네이버 분봉(v0) / pykrx / FinanceDataReader"
+requires-python = ">=3.11"
+dependencies = []
+# 2단계에서 uv add: httpx pandas pyarrow pykrx finance-datareader

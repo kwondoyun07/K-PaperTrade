@@ -1,0 +1,169 @@
+:root {
+  /* 한국식 색상 컨벤션: 상승/수익 = 빨강, 하락/손실 = 파랑 */
+  --up: #f04452;
+  --down: #3182f6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #0c0c0f;
+  color: #e8e8ec;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, system-ui, "Malgun Gothic", sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: #e8e8ec;
+  text-decoration: none;
+}
+a:hover {
+  color: var(--up);
+}
+
+input,
+select,
+button {
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+input:focus,
+select:focus {
+  outline: none;
+  border-color: #4a4a56 !important;
+}
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+}
+select {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #26262e;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.scrub {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: #26262e;
+  cursor: pointer;
+}
+.scrub::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #e8e8ec;
+  border: 2px solid #0c0c0f;
+  box-shadow: 0 0 0 1px #4a4a56;
+  cursor: grab;
+}
+
+.card {
+  background: #17171c;
+  border: 1px solid #1f1f26;
+  border-radius: 12px;
+}
+
+.select {
+  height: 34px;
+  background: #111114;
+  border: 1px solid #26262e;
+  border-radius: 9px;
+  color: #e8e8ec;
+  padding: 0 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.input {
+  height: 38px;
+  background: #111114;
+  border: 1px solid #26262e;
+  border-radius: 9px;
+  color: #e8e8ec;
+  padding: 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.btnAccent {
+  height: 34px;
+  padding: 0 18px;
+  border-radius: 9px;
+  border: none;
+  background: var(--up);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.btnAccent:hover {
+  background: #d93b48;
+}
+
+.btnGhost {
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 9px;
+  border: 1px solid #2c2c36;
+  background: #1c1c22;
+  color: #e8e8ec;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btnGhost:hover {
+  background: #22222a;
+}
+
+.navItem:hover {
+  background: #1c1c22;
+}
+.rowHover:hover {
+  background: #22222a;
+}
+
+.disclaimer {
+  padding: 14px 24px;
+  border-top: 1px solid #1f1f26;
+  font-size: 11px;
+  color: #5c5e68;
+}

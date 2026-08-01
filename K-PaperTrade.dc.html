@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+html,body{margin:0;padding:0;background:#0C0C0F;color:#E8E8EC;font-family:'Pretendard Variable',Pretendard,-apple-system,sans-serif;font-variant-numeric:tabular-nums;}
+a{color:#E8E8EC;text-decoration:none;} a:hover{color:#F04452;}
+*{box-sizing:border-box;}
+input,select,button{font-family:inherit;font-variant-numeric:tabular-nums;}
+input:focus,select:focus{outline:none;border-color:#4A4A56 !important;}
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
+@keyframes toastIn{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
+.scrub{-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;background:#26262E;cursor:pointer;}
+.scrub::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#E8E8EC;border:2px solid #0C0C0F;box-shadow:0 0 0 1px #4A4A56;cursor:grab;}
+select{appearance:none;-webkit-appearance:none;}
+::-webkit-scrollbar{width:8px;height:8px;} ::-webkit-scrollbar-thumb{background:#26262E;border-radius:4px;} ::-webkit-scrollbar-track{background:transparent;}
+</style>
+</helmet>
+<div style="min-height:100vh;display:flex;flex-direction:column;">
+<header style="height:56px;display:flex;align-items:center;gap:20px;padding:0 20px;background:#111114;border-bottom:1px solid #1F1F26;position:sticky;top:0;z-index:50;">
+  <div style="display:flex;align-items:center;gap:8px;flex:none;">
+    <div style="width:26px;height:26px;border-radius:8px;background:#F04452;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;color:#fff;">K</div>
+    <span style="font-weight:700;font-size:15px;letter-spacing:-0.2px;">K-PaperTrade</span>
+    <span style="font-size:11px;font-weight:600;color:#F04452;background:rgba(240,68,82,0.12);border:1px solid rgba(240,68,82,0.35);padding:2px 7px;border-radius:6px;white-space:nowrap;flex:none;">모의투자</span>
+  </div>
+  <div style="position:relative;width:300px;flex:none;">
+    <input placeholder="종목명·코드 검색" value="{{ q }}" onChange="{{ onSearch }}" style="width:100%;height:34px;background:#1A1A20;border:1px solid #26262E;border-radius:10px;color:#E8E8EC;padding:0 12px;font-size:13px;">
+    <sc-if value="{{ hasResults }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;top:40px;left:0;right:0;background:#1A1A20;border:1px solid #2C2C36;border-radius:12px;overflow:hidden;box-shadow:0 12px 32px rgba(0,0,0,0.5);">
+        <sc-for list="{{ results }}" as="r" hint-placeholder-count="0">
+          <div onClick="{{ r.go }}" style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;cursor:pointer;font-size:13px;" style-hover="background:#22222A">
+            <span style="font-weight:600;">{{ r.name }}</span>
+            <span style="color:#8B8D98;font-size:12px;">{{ r.code }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+  </div>
+  <div style="flex:1;"></div>
+  <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8B8D98;">
+    <span style="width:7px;height:7px;border-radius:50%;background:{{ mktDot }};"></span>
+    <span>{{ mktLabel }}</span>
+  </div>
+  <select value="{{ account }}" onChange="{{ onAccount }}" style="height:34px;background:#1A1A20;border:1px solid #26262E;border-radius:10px;color:#E8E8EC;padding:0 12px;font-size:13px;cursor:pointer;">
+    <option value="main">기본 계좌 (00-1234)</option>
+    <option value="fresh">신규 계좌 (00-5678)</option>
+  </select>
+</header>
+<div style="display:flex;flex:1;align-items:stretch;">
+<nav style="width:200px;flex:none;background:#111114;border-right:1px solid #1F1F26;padding:16px 10px;display:flex;flex-direction:column;gap:2px;">
+  <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="5">
+    <div onClick="{{ n.go }}" style="{{ n.style }}" style-hover="background:#1C1C22">
+      <span>{{ n.label }}</span>
+      <sc-if value="{{ n.soon }}" hint-placeholder-val="{{ false }}"><span style="font-size:10px;color:#5C5E68;border:1px solid #2C2C36;border-radius:5px;padding:1px 5px;">예정</span></sc-if>
+    </div>
+  </sc-for>
+</nav>
+<main style="flex:1;min-width:0;padding:20px 24px 32px;">
+
+<sc-if value="{{ showDash }}" hint-placeholder-val="{{ true }}">
+<section data-screen-label="대시보드" style="display:flex;flex-direction:column;gap:16px;max-width:1180px;">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+    <sc-for list="{{ metricCards }}" as="m" hint-placeholder-count="4">
+      <div style="background:#17171C;border:1px solid #1F1F26;border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;gap:6px;">
+        <span style="font-size:12px;color:#8B8D98;">{{ m.label }}</span>
+        <span style="font-size:22px;font-weight:700;letter-spacing:-0.4px;color:{{ m.color }};">{{ m.value }}</span>
+        <span style="font-size:12px;color:{{ m.subColor }};">{{ m.sub }}</span>
+      </div>
+    </sc-for>
+  </div>
+  <div style="background:#17171C;border:1px solid #1F1F26;border-radius:12px;padding:18px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:16px;">
+        <span style="font-size:15px;font-weight:700;">수익률 추이</span>
+        <div style="display:flex;gap:12px;font-size:12px;color:#8B8D98;">
+          <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:2px;background:#F04452;"></span>내 포트폴리오</span>
+          <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:2px;background:#8B8D98;"></span>KOSPI</span>
+          <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:2px;background:#3182F6;"></span>KOSDAQ</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:4px;background:#111114;border-radius:9px;padding:3px;">
+        <sc-for list="{{ periodBtns }}" as="p" hint-placeholder-count="3">
+          <button onClick="{{ p.go }}" style="{{ p.style }}">{{ p.label }}</button>
+        </sc-for>
+      </div>
+    </div>
+    <canvas ref="{{ dashRef }}" style="width:100%;height:250px;display:block;"></canvas>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start;">
+    <div style="background:#17171C;border:1px solid #1F1F26;border-radius:12px;padding:18px;">
+      <div style="font-size:15px;font-weight:700;margin-bottom:12px;">보유종목</div>
+      <sc-if value="{{ hasHoldings }}" hint-placeholder-val="{{ true }}">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr>
+            <th style="text-align:left;color:#8B8D98;font-weight:500;font-size:12px;padding:6px 0;border-bottom:1px solid #1F1F26;">종목명</th>
+            <th style="text-align:right;color:#8B8D98;font-weight:500;font-size:12px;padding:6px 0;border-bottom:1px solid #1F1F26;">수량</th>
+            <th style="text-align:right;color:#8B8D98;font-weight:500;font-size:12px;padding:6px 0;border-bottom:1px solid #1F1F26;">평단가</th>
+            <th style="text-align:right;color:#8B8D98;font-weight:500;font-size:12px;padding:6px 0;border-bottom:1px solid #1F1F26;">현재가</th>
+            <th style="text-align:right;color:#8B8D98;font-weight:500;font-size:12px;padding:6px 0;border-bottom:1px solid #1F1F26;">평가손익</th>
+            <th style="text-align:right;color:#8B8D98;font-weight:500;font-size:12px;padding:6px 0;border-bottom:1px solid #1F1F26;">수익률</th>
+          </tr></thead>
+          <tbody>
+            <sc-for list="{{ holdRows }}" as="h" hint-placeholder-count="4">
+              <tr>
+                <td style="padding:{{ rowPad }} 0;border-bottom:1px solid #1A1A20;font-weight:600;">{{ h.name }}</td>
+                <td style="padding:{{ rowPad }} 0;border-bottom:1px solid #1A1A20;text-align:right;color:#B7B9C2;">{{ h.qty }}</td>
+                <td style="padding:{{ rowPad }} 0;border-bottom:1px solid #1A1A20;text-align:right;color:#B7B9C2;">{{ h.avg }}</td>
+                <td style="padding:{{ rowPad }} 0;border-bottom:1px solid #1A1A20;text-align:right;">{{ h.cur }}</td>
+                <td style="padding:{{ rowPad }} 0;border-bottom:1px solid #1A1A20;text-align:right;color:{{ h.color }};">{{ h.pl }}</td>
+                <td style="padding:{{ rowPad }} 0;border-bottom:1px solid #1A1A20;text-align:right;color:{{ h.color }};font-weight:600;">{{ h.rate }}</td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </sc-if>
+      <sc-if value="{{ noHoldings }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:40px 0;text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center;">
+          <div style="width:40px;height:40px;border-radius:12px;background:#1C1C22;border:1px dashed #2C2C36;display:flex;align-items:center;justify-content:center;color:#5C5E68;font-size:18px;">—</div>
+          <span style="font-size:13px;color:#8B8D98;">보유종목이 없습니다</span>
+          <span style="font-size:12px;color:#5C5E68;">리플레이 모드에서 매매 연습을 시작해보세요</span>
+        </div>
+      </sc-if>
+    </div>
+    <div style="background:#17171C;border:1px solid #1F1F26;border-radius:12px;padding:18px;">
+      <div style="font-size:15px;font-weight:700;margin-bottom:12px;">최근 체결</div>
+      <sc-if value="{{ hasHoldings }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;flex-direction:column;">
+          <sc-for list="{{ fillRows }}" as="f" hint-placeholder-count="5">
+            <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #1A1A20;font-size:13px;">
+              <span style="{{ f.badgeStyle }}">{{ f.side }}</span>
+              <span style="font-weight:600;flex:1;">{{ f.name }}</span>
+              <span style="color:#B7B9C2;">{{ f.detail }}</span>
+              <span style="color:#5C5E68;font-size:12px;">{{ f.time }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+      <sc-if value="{{ noHoldings }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:40px 0;text-align:center;font-size:13px;color:#8B8D98;">체결 내역이 없습니다</div>
+      </sc-if>
+    </div>
+  </div>
+</section>
+</sc-if>
+
+<sc-if value="{{ showReplay }}" hint-placeholder-val="{{ false }}">
+<section data-screen-label="리플레이 모드" style="display:flex;flex-direction:column;gap:14px;max-width:1240px;">
+  <div style="background:#17171C;border:1px solid #1F1F26;border-radius:12px;padding:12px 16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+    <select value="{{ rDate }}" onChange="{{ onDate }}" style="height:34px;background:#111114;border:1px solid #26262E;border-radius:9px;color:#E8E8EC;padding:0 10px;font-size:13px;cursor:pointer;">
+      <sc-for list="{{ dateOpts }}" as="d" hint-placeholder-count="3"><option value="{{ d.v }}">{{ d.v }}</option></sc-for>
+    </select>
+    <select value="{{ rStock }}" onChange="{{ onStock }}" style="height:34px;background:#111114;border:1px solid #26262E;border-radius:9px;color:#E8E8EC;padding:0 10px;font-size:13px;cursor:pointer;min-width:150px;">
+      <sc-for list="{{ stockOpts }}" as="s" hint-placeholder-count="8"><option value="{{ s.code }}">{{ s.name }}</option></sc-for>
+    </select>
+    <button onClick="{{ togglePlay }}" style="height:34px;padding:0 18px;border-radius:9px;border:none;background:#F04452;color:#fff;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px;" style-hover="background:#D93B48">{{ playLabel }}</button>
+    <div style="display:flex;gap:4px;background:#111114;border-radius:9px;padding:3px;">
+      <sc-for list="{{ speedBtns }}" as="sp" hint-placeholder-count="3">
+        <button onClick="{{ sp.go }}" style="{{ sp.style }}">{{ sp.label }}</button>
+      </sc-for>
+    </div>
+    <input type="range" class="scrub" min="0" max="390" value="{{ idx }}" onChange="{{ onScrub }}" style="flex:1;min-width:160px;">
+    <div style="display:flex;align-items:baseline;gap:6px;flex:none;">
+      <span style="font-size:20px;font-weight:800;letter-spacing:-0.3px;">{{ clock }}</span>
+      <span style="font-size:11px;color:#5C5E68;">/ 15:30</span>
+    </div>
+  </div>
+  <sc-if value="{{ sessionDone }}" hint-placeholder-val="{{ false }}">
+    <div style="background:#17171C;border:1px solid rgba(240,68,82,0.4);border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:32px;">
+      <span style="font-size:14px;font-weight:700;">세션 종료 · 결과 요약</span>
+      <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:11px;color:#8B8D98;">실현손익</span><span style="font-size:18px;font-weight:700;color:{{ sumColor }};">{{ sumPL }}</span></div>
+      <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:11px;color:#8B8D98;">수익률</span><span style="font-size:18px;font-weight:700;color:{{ sumColor }};">{{ sumRate }}</span></div>
+      <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:11px;color:#8B8D98;">매매 횟수</span><span style="font-size:18px;font-weight:700;">{{ sumTrades }}</span></div>
+      <div style="flex:1;"></div>
+      <button onClick="{{ resetSession }}" style="height:34px;padding:0 16px;border-radius:9px;border:1px solid #2C2C36;background:#1C1C22;color:#E8E8EC;font-size:13px;font-weight:600;cursor:pointer;" style-hover="background:#22222A">다시 재생</button>
+    </div>
+  </sc-if>
+  <div style="display:grid;grid-template-columns:1fr 320px;gap:14px;align-items:start;">
+    <div style="background:#17171C;border:1px solid #1F1F26;border-radius:12px;padding:16px;">
+      <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:10px;min-width:0;">
+        <span style="font-size:15px;font-weight:700;white-space:nowrap;flex:none;">{{ rStockName }}</span>
+        <span style="font-size:12px;color:#5C5E68;white-space:nowrap;flex:none;">{{ rStock }}</span>
+        <span style="font-size:18px;font-weight:800;color:{{ curColor }};white-space:nowrap;flex:none;">{{ curPriceFmt }}</span>
+        <span style="font-size:13px;font-weight:600;color:{{ curColor }};white-space:nowrap;flex:none;">{{ curChange }}</span>
+        <div style="flex:1;"></div>
+        <span style="font-size:11px;color:#5C5E68;">1분봉 · 최근 120봉</span>
+      </div>
+      <canvas ref="{{ replayRef }}" style="width:100%;height:430px;display:block;"></canvas>
+    </div>
+    <div style="background:#17171C;border:1px solid #1F1F26;border-radius:12px;padding:16px;position:sticky;top:76px;display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;gap:4px;background:#111114;border-radius:9px;padding:3px;">
+        <button onClick="{{ setBuy }}" style="{{ buyTabStyle }}">매수</button>
+        <button onClick="{{ setSell }}" style="{{ sellTabStyle }}">매도</button>
+      </div>
+      <div style="display:flex;gap:4px;">
+        <button onClick="{{ setMarket }}" style="{{ marketStyle }}">시장가</button>
+        <button onClick="{{ setLimit }}" style="{{ limitStyle }}">지정가</button>
+      </div>
+      <sc-if value="{{ isLimit }}" hint-placeholder-val="{{ false }}">
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:#8B8D98;">지정가 (₩)
+          <input type="number" value="{{ limitPx }}" onChange="{{ onLimitPx }}" style="height:38px;background:#111114;border:1px solid #26262E;border-radius:9px;color:#E8E8EC;padding:0 12px;font-size:14px;font-weight:600;">
+        </label>
+      </sc-if>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:#8B8D98;">수량 (주)
+        <input type="number" value="{{ qty }}" onChange="{{ onQty }}" placeholder="0" style="height:38px;background:#111114;border:1px solid #26262E;border-radius:9px;color:#E8E8EC;padding:0 12px;font-size:14px;font-weight:600;">
+      </label>
+      <div style="display:flex;flex-direction:column;gap:7px;background:#111114;border-radius:10px;padding:12px;font-size:12px;">
+        <div style="display:flex;justify-content:space-between;"><span style="color:#8B8D98;">체결단가</span><span>{{ oPxFmt }}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span style="color:#8B8D98;">주문금액</span><span>{{ oAmtFmt }}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span style="color:#8B8D98;">수수료 (0.015%)</span><span>{{ oFeeFmt }}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span style="color:#8B8D98;">거래세 (0.18%)</span><span>{{ oTaxFmt }}</span></div>
+        <div style="height:1px;background:#26262E;margin:2px 0;"></div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;"><span>{{ oTotalLabel }}</span><span style="color:{{ oSideColor }};">{{ oTotalFmt }}</span></div>
+      </div>
+      <div style="font-size:12px;color:#8B8D98;display:flex;justify-content:space-between;"><span>보유</span><span>{{ posLine }}</span></div>
+      <button onClick="{{ placeOrder }}" style="{{ orderBtnStyle }}">{{ orderBtnLabel }}</button>
+    </div>
+  </div>
+</section>
+</sc-if>
+
+<sc-if value="{{ showStub }}" hint-placeholder-val="{{ false }}">
+<section data-screen-label="준비 중 화면" style="max-width:1180px;">
+  <div style="background:#17171C;border:1px dashed #2C2C36;border-radius:12px;padding:64px 0;text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center;">
+    <span style="font-size:15px;font-weight:700;">{{ stubTitle }}</span>
+    <span style="font-size:13px;color:#8B8D98;">대시보드·리플레이 확정 후 같은 디자인 시스템으로 확장 예정입니다</span>
+  </div>
+</section>
+</sc-if>
+
+</main>
+</div>
+<footer style="padding:14px 24px;border-top:1px solid #1F1F26;font-size:11px;color:#5C5E68;">본 서비스는 모의투자·교육용 시뮬레이터입니다. 실제 투자 손익과 무관하며, 제공되는 데이터는 더미 데이터입니다.</footer>
+<sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#22222A;border:1px solid #2C2C36;border-radius:12px;padding:12px 20px;font-size:13px;font-weight:600;box-shadow:0 12px 32px rgba(0,0,0,0.5);animation:toastIn 0.25s ease;z-index:100;display:flex;align-items:center;gap:8px;">
+    <span style="width:8px;height:8px;border-radius:50%;background:{{ toastDot }};"></span>{{ toastMsg }}
+  </div>
+</sc-if>
+<sc-if value="{{ hasModal }}" hint-placeholder-val="{{ false }}">
+  <div onClick="{{ closeModal }}" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;display:flex;align-items:center;justify-content:center;">
+    <div style="background:#1A1A20;border:1px solid #2C2C36;border-radius:16px;padding:24px;width:380px;display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="width:22px;height:22px;border-radius:50%;background:rgba(240,68,82,0.15);color:#F04452;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;">!</span>
+        <span style="font-size:15px;font-weight:700;">주문 거부</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:#B7B9C2;line-height:1.6;">해당 종목은 <span style="color:#F04452;font-weight:700;">상한가(+30.0%)</span>에 도달하여 매수 주문이 거부되었습니다. 상한가 종목은 매도 호가가 없어 시장가 매수가 체결되지 않습니다.</p>
+      <button onClick="{{ closeModal }}" style="height:38px;border-radius:9px;border:none;background:#F04452;color:#fff;font-size:13px;font-weight:700;cursor:pointer;" style-hover="background:#D93B48">확인</button>
+    </div>
+  </div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;startCash&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:10000000,&quot;tsType&quot;:&quot;number&quot;,&quot;unit&quot;:&quot;₩&quot;,&quot;section&quot;:&quot;시뮬레이션&quot;,&quot;min&quot;:1000000,&quot;max&quot;:100000000,&quot;step&quot;:1000000},&quot;feeRate&quot;:{&quot;editor&quot;:&quot;float&quot;,&quot;default&quot;:0.00015,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;시뮬레이션&quot;,&quot;min&quot;:0,&quot;max&quot;:0.005,&quot;step&quot;:0.00005},&quot;compact&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;표시&quot;}}">
+class Component extends DCLogic {
+  state = {
+    screen: 'dash', account: 'main', q: '',
+    period: '1M',
+    rDate: '2026-07-31', rStock: '005930',
+    playing: false, speed: 10, idx: 60, done: false,
+    side: 'buy', oType: 'market', qty: '', limitPx: '',
+    trades: [], pos: { qty: 0, avg: 0 }, realized: 0, buyTurnover: 0,
+    toast: null, modal: false,
+  };
+  dashRef = React.createRef();
+  replayRef = React.createRef();
+  cache = {};
+  stocks = [
+    { code: '005930', name: '삼성전자', base: 71800 },
+    { code: '000660', name: 'SK하이닉스', base: 198500 },
+    { code: '035420', name: 'NAVER', base: 187300 },
+    { code: '035720', name: '카카오', base: 48950 },
+    { code: '086520', name: '에코프로', base: 104200, limitUp: true },
+    { code: '068270', name: '셀트리온', base: 178900 },
+    { code: '005380', name: '현대차', base: 242000 },
+    { code: '034020', name: '두산에너빌리티', base: 17840 },
+  ];
+  holdings = [
+    { code: '005930', qty: 120, avg: 69500 },
+    { code: '000660', qty: 15, avg: 185000 },
+    { code: '035420', qty: 20, avg: 192400 },
+    { code: '035720', qty: 150, avg: 52300 },
+  ];
+  fills = [
+    { side: '매수', name: '삼성전자', detail: '20주 · ₩71,300', time: '07-31 14:52' },
+    { side: '매도', name: '카카오', detail: '50주 · ₩49,150', time: '07-31 13:10' },
+    { side: '매수', name: 'SK하이닉스', detail: '5주 · ₩197,800', time: '07-31 10:44' },
+    { side: '매수', name: '카카오', detail: '80주 · ₩48,600', time: '07-30 15:02' },
+    { side: '매도', name: '두산에너빌리티', detail: '110주 · ₩18,020', time: '07-30 09:31' },
+  ];
+  rng(seed) { let a = seed >>> 0; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  seedOf(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+  series(code, date) {
+    const key = code + date;
+    if (this.cache[key]) return this.cache[key];
+    const st = this.stocks.find(s => s.code === code);
+    const r = this.rng(this.seedOf(key));
+    const tick = st.base > 100000 ? 100 : st.base > 20000 ? 50 : 10;
+    const out = []; let px = st.base * (0.985 + r() * 0.03);
+    const rd = n => Math.round(n / tick) * tick;
+    for (let i = 0; i < 391; i++) {
+      const drift = Math.sin(i / 60 + r() * 2) * 0.0004;
+      const vol = 0.0012 + (i < 30 || i > 360 ? 0.0012 : 0);
+      const o = px; px = px * (1 + drift + (r() - 0.5) * 2 * vol);
+      const hi = Math.max(o, px) * (1 + r() * vol), lo = Math.min(o, px) * (1 - r() * vol);
+      out.push({ o: rd(o), c: rd(px), h: rd(hi), l: rd(lo), v: Math.round((r() * 0.8 + 0.2) * (i < 30 || i > 360 ? 32000 : 9000)) });
+    }
+    this.cache[key] = out; return out;
+  }
+  curve(seed, n, drift, vol) {
+    const r = this.rng(seed); const out = [0]; let v = 0;
+    for (let i = 1; i < n; i++) { v += drift + (r() - 0.5) * vol; out.push(v); }
+    return out;
+  }
+  priceAt() { const s = this.series(this.state.rStock, this.state.rDate); return s[Math.min(this.state.idx, 390)].c; }
+  won(n) { return '₩' + Math.round(n).toLocaleString('ko-KR'); }
+  sgnWon(n) { return (n > 0 ? '+' : n < 0 ? '−' : '') + '₩' + Math.abs(Math.round(n)).toLocaleString('ko-KR'); }
+  pct(n) { return (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(2) + '%'; }
+  clr(n) { return n > 0 ? '#F04452' : n < 0 ? '#3182F6' : '#8B8D98'; }
+  toast(msg, ok) {
+    clearTimeout(this._tt);
+    this.setState({ toast: { msg, dot: ok ? '#F04452' : '#8B8D98' } });
+    this._tt = setTimeout(() => this.setState({ toast: null }), 2600);
+  }
+  togglePlay = () => {
+    if (this.state.done) { this.resetSession(); return; }
+    const playing = !this.state.playing;
+    this.setState({ playing }); this.setTimer(playing, this.state.speed);
+  };
+  setTimer(playing, speed) {
+    clearInterval(this._timer);
+    if (!playing) return;
+    const ms = { 1: 900, 10: 90, 60: 15 }[speed];
+    this._timer = setInterval(() => {
+      this.setState(s => {
+        if (s.idx >= 390) { clearInterval(this._timer); return { playing: false, done: true }; }
+        return { idx: s.idx + 1 };
+      });
+    }, ms);
+  }
+  resetSession = () => {
+    clearInterval(this._timer);
+    this.setState({ idx: 0, playing: false, done: false, trades: [], pos: { qty: 0, avg: 0 }, realized: 0, buyTurnover: 0 });
+  };
+  placeOrder = () => {
+    const s = this.state;
+    const st = this.stocks.find(x => x.code === s.rStock);
+    const qty = Math.max(0, parseInt(s.qty) || 0);
+    if (!qty) { this.toast('수량을 입력하세요', false); return; }
+    if (s.side === 'buy' && st.limitUp) { this.setState({ modal: true }); return; }
+    const px = s.oType === 'limit' ? (parseInt(s.limitPx) || this.priceAt()) : this.priceAt();
+    let { pos, realized, buyTurnover } = s;
+    if (s.side === 'buy') {
+      pos = { qty: pos.qty + qty, avg: (pos.avg * pos.qty + px * qty) / (pos.qty + qty) };
+      buyTurnover += px * qty;
+    } else {
+      if (qty > pos.qty) { this.toast('보유 수량이 부족합니다', false); return; }
+      realized += (px - pos.avg) * qty;
+      pos = { qty: pos.qty - qty, avg: pos.qty - qty > 0 ? pos.avg : 0 };
+    }
+    this.setState({ pos, realized, buyTurnover, trades: [...s.trades, { i: s.idx, side: s.side, px, qty }], qty: '' });
+    this.toast((s.side === 'buy' ? '매수' : '매도') + ' 체결 · ' + st.name + ' ' + qty + '주 @ ' + this.won(px), true);
+  };
+  componentDidMount() { this.draw(); this._rs = () => this.draw(); window.addEventListener('resize', this._rs); }
+  componentWillUnmount() { clearInterval(this._timer); clearTimeout(this._tt); window.removeEventListener('resize', this._rs); }
+  componentDidUpdate() { this.draw(); }
+  setupCanvas(cv) {
+    const dpr = window.devicePixelRatio || 1, W = cv.offsetWidth, H = cv.offsetHeight;
+    if (!W) return null;
+    cv.width = W * dpr; cv.height = H * dpr;
+    const g = cv.getContext('2d'); g.scale(dpr, dpr); g.font = '11px Pretendard, sans-serif';
+    return { g, W, H };
+  }
+  draw() {
+    if (this.state.screen === 'dash') this.drawDash();
+    if (this.state.screen === 'replay') this.drawReplay();
+  }
+  drawDash() {
+    const cv = this.dashRef.current; if (!cv) return;
+    const c = this.setupCanvas(cv); if (!c) return; const { g, W, H } = c;
+    const n = { '1M': 22, '3M': 66, '1Y': 252 }[this.state.period];
+    const seed = this.seedOf('dash' + this.state.period + this.state.account);
+    const empty = this.state.account === 'fresh';
+    const lines = [
+      { d: this.curve(seed + 1, n, empty ? 0 : 0.11, empty ? 0.02 : 0.9), col: '#F04452', w: 2 },
+      { d: this.curve(seed + 2, n, 0.05, 0.6), col: '#8B8D98', w: 1.5 },
+      { d: this.curve(seed + 3, n, 0.03, 0.9), col: '#3182F6', w: 1.5 },
+    ];
+    const all = lines.flatMap(l => l.d);
+    const mn = Math.min(...all), mx = Math.max(...all), pad = (mx - mn) * 0.1 || 1;
+    const y = v => 8 + (H - 30) * (1 - (v - mn + pad) / (mx - mn + 2 * pad));
+    const x = i => 4 + (W - 52) * i / (n - 1);
+    g.strokeStyle = '#1F1F26'; g.fillStyle = '#5C5E68'; g.textAlign = 'left';
+    for (let k = 0; k <= 3; k++) {
+      const v = mn - pad + (mx - mn + 2 * pad) * k / 3, yy = y(v);
+      g.beginPath(); g.moveTo(0, yy); g.lineTo(W - 48, yy); g.stroke();
+      g.fillText(this.pct(v).replace('−', '-'), W - 44, yy + 4);
+    }
+    for (const L of lines) {
+      g.strokeStyle = L.col; g.lineWidth = L.w; g.beginPath();
+      L.d.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
+      g.stroke();
+    }
+    g.fillStyle = '#5C5E68'; g.textAlign = 'center';
+    const labels = { '1M': ['7/1', '7/10', '7/20', '7/31'], '3M': ['5월', '6월', '7월', '8월'], '1Y': ['25.9', '25.12', '26.3', '26.7'] }[this.state.period];
+    labels.forEach((t, i) => g.fillText(t, x(Math.round((n - 1) * i / 3)), H - 4));
+    g.lineWidth = 1;
+  }
+  drawReplay() {
+    const cv = this.replayRef.current; if (!cv) return;
+    const c = this.setupCanvas(cv); if (!c) return; const { g, W, H } = c;
+    const s = this.series(this.state.rStock, this.state.rDate);
+    const end = this.state.idx + 1, start = Math.max(0, end - 120);
+    const view = s.slice(start, end);
+    const padR = 62, botT = 18, volH = Math.round(H * 0.2);
+    const chH = H - volH - botT - 12, chT = 6;
+    const hi = Math.max(...view.map(d => d.h)), lo = Math.min(...view.map(d => d.l)), pr = (hi - lo) * 0.08 || 1;
+    const py = v => chT + chH * (1 - (v - lo + pr) / (hi - lo + 2 * pr));
+    const slotW = (W - padR - 6) / 120, cw = Math.max(2, slotW * 0.62);
+    const px_ = i => 3 + slotW * (i - start) + slotW / 2;
+    g.strokeStyle = '#1F1F26'; g.fillStyle = '#5C5E68'; g.textAlign = 'left';
+    for (let k = 0; k <= 4; k++) {
+      const v = lo - pr + (hi - lo + 2 * pr) * k / 4, yy = py(v);
+      g.beginPath(); g.moveTo(0, yy); g.lineTo(W - padR + 6, yy); g.stroke();
+      g.fillText(Math.round(v).toLocaleString('ko-KR'), W - padR + 10, yy + 4);
+    }
+    const vmax = Math.max(...view.map(d => d.v));
+    view.forEach((d, j) => {
+      const i = start + j, xx = px_(i);
+      const up = d.c >= d.o, col = up ? '#F04452' : '#3182F6';
+      g.strokeStyle = col; g.fillStyle = col;
+      g.beginPath(); g.moveTo(xx, py(d.h)); g.lineTo(xx, py(d.l)); g.stroke();
+      const yo = py(d.o), yc = py(d.c);
+      g.fillRect(xx - cw / 2, Math.min(yo, yc), cw, Math.max(1, Math.abs(yc - yo)));
+      const vh = (d.v / vmax) * (volH - 6);
+      g.globalAlpha = 0.55;
+      g.fillRect(xx - cw / 2, H - botT - vh, cw, vh);
+      g.globalAlpha = 1;
+    });
+    const last = view[view.length - 1];
+    if (last) {
+      const yy = py(last.c);
+      g.strokeStyle = '#E8E8EC'; g.setLineDash([3, 3]);
+      g.beginPath(); g.moveTo(0, yy); g.lineTo(W - padR + 6, yy); g.stroke(); g.setLineDash([]);
+      const up = last.c >= s[0].o;
+      g.fillStyle = up ? '#F04452' : '#3182F6';
+      g.fillRect(W - padR + 6, yy - 9, padR - 8, 18);
+      g.fillStyle = '#fff'; g.textAlign = 'left';
+      g.fillText(last.c.toLocaleString('ko-KR'), W - padR + 10, yy + 4);
+    }
+    for (const t of this.state.trades) {
+      if (t.i < start || t.i >= end) continue;
+      const xx = px_(t.i), d = s[t.i];
+      const buy = t.side === 'buy';
+      const yy = buy ? py(d.l) + 14 : py(d.h) - 14;
+      g.fillStyle = buy ? '#F04452' : '#3182F6';
+      g.beginPath(); g.arc(xx, yy, 8, 0, 7); g.fill();
+      g.fillStyle = '#fff'; g.textAlign = 'center'; g.font = 'bold 10px Pretendard, sans-serif';
+      g.fillText(buy ? 'B' : 'S', xx, yy + 3.5);
+      g.font = '11px Pretendard, sans-serif';
+    }
+    g.fillStyle = '#5C5E68'; g.textAlign = 'center';
+    for (let i = start; i < end; i++) {
+      const m = 540 + i;
+      if (m % 60 === 0) g.fillText(String(Math.floor(m / 60)).padStart(2, '0') + ':00', px_(i), H - 4);
+    }
+  }
+  seg(active, accent) {
+    return {
+      height: '28px', padding: '0 12px', borderRadius: '7px', border: 'none', cursor: 'pointer',
+      fontSize: '12px', fontWeight: 600,
+      background: active ? (accent || '#26262E') : 'transparent',
+      color: active ? (accent ? '#fff' : '#E8E8EC') : '#8B8D98',
+    };
+  }
+  renderVals() {
+    const s = this.state;
+    const feeRate = this.props.feeRate ?? 0.00015;
+    const startCash = this.props.startCash ?? 10000000;
+    const compact = this.props.compact ?? false;
+    const empty = s.account === 'fresh';
+    const lastClose = code => this.series(code, '2026-07-31')[390].c;
+    // dashboard metrics
+    let holdRows = [], evalSum = 0, plSum = 0;
+    if (!empty) {
+      holdRows = this.holdings.map(h => {
+        const st = this.stocks.find(x => x.code === h.code);
+        const cur = lastClose(h.code), pl = (cur - h.avg) * h.qty, rate = (cur / h.avg - 1) * 100;
+        evalSum += cur * h.qty; plSum += pl;
+        return { name: st.name, qty: h.qty.toLocaleString('ko-KR'), avg: this.won(h.avg), cur: this.won(cur), pl: this.sgnWon(pl), rate: this.pct(rate), color: this.clr(pl) };
+      });
+    }
+    const cash = empty ? startCash : 12450000;
+    const total = cash + evalSum;
+    const dayRate = empty ? 0 : 0.84;
+    const metricCards = [
+      { label: '총자산', value: this.won(total), sub: empty ? '초기 자본' : '전일 대비 ' + this.sgnWon(total * dayRate / 100), color: '#E8E8EC', subColor: empty ? '#5C5E68' : this.clr(dayRate) },
+      { label: '평가손익', value: this.sgnWon(plSum), sub: empty ? '보유종목 없음' : this.pct(plSum / (evalSum - plSum) * 100), color: this.clr(plSum), subColor: this.clr(plSum) },
+      { label: '현금', value: this.won(cash), sub: '주문 가능 금액', color: '#E8E8EC', subColor: '#5C5E68' },
+      { label: '일간수익률', value: this.pct(dayRate), sub: 'KOSPI ' + this.pct(0.31), color: this.clr(dayRate), subColor: '#5C5E68' },
+    ];
+    // replay order calc
+    const st = this.stocks.find(x => x.code === s.rStock);
+    const cur = this.priceAt();
+    const open = this.series(s.rStock, s.rDate)[0].o;
+    const chg = (cur / open - 1) * 100;
+    const qty = Math.max(0, parseInt(s.qty) || 0);
+    const oPx = s.oType === 'limit' ? (parseInt(s.limitPx) || cur) : cur;
+    const amt = qty * oPx, fee = Math.floor(amt * feeRate), tax = s.side === 'sell' ? Math.floor(amt * 0.0018) : 0;
+    const oTotal = s.side === 'buy' ? amt + fee : amt - fee - tax;
+    const buyC = '#F04452', sellC = '#3182F6';
+    const mins = 540 + Math.min(s.idx, 390);
+    const clock = String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
+    const sumRate = s.buyTurnover > 0 ? s.realized / s.buyTurnover * 100 : 0;
+    const navDefs = [
+      { key: 'dash', label: '대시보드' }, { key: 'detail', label: '종목 상세', soon: true },
+      { key: 'replay', label: '리플레이' }, { key: 'orders', label: '주문·체결', soon: true },
+      { key: 'ai', label: 'AI 판단 로그', soon: true },
+    ];
+    const stubTitles = { detail: '종목 상세', orders: '주문·체결 내역', ai: 'AI 판단 로그' };
+    const ql = s.q.trim().toLowerCase();
+    const results = ql ? this.stocks.filter(x => x.name.toLowerCase().includes(ql) || x.code.includes(ql)).slice(0, 6).map(x => ({
+      name: x.name, code: x.code, go: () => this.setState({ q: '', screen: 'replay', rStock: x.code, idx: 60, playing: false, done: false, trades: [], pos: { qty: 0, avg: 0 }, realized: 0, buyTurnover: 0 }) && clearInterval(this._timer),
+    })) : [];
+    return {
+      q: s.q, onSearch: e => this.setState({ q: e.target.value }),
+      hasResults: results.length > 0, results,
+      account: s.account, onAccount: e => this.setState({ account: e.target.value }),
+      mktLabel: s.screen === 'replay' && s.playing ? '리플레이 중' : '장마감',
+      mktDot: s.screen === 'replay' && s.playing ? '#F04452' : '#5C5E68',
+      navItems: navDefs.map(n => ({
+        label: n.label, soon: !!n.soon,
+        go: () => { clearInterval(this._timer); this.setState({ screen: n.key, playing: false }); },
+        style: {
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 12px',
+          borderRadius: '9px', fontSize: '13px', cursor: 'pointer',
+          fontWeight: s.screen === n.key ? 700 : 500,
+          color: s.screen === n.key ? '#E8E8EC' : '#8B8D98',
+          background: s.screen === n.key ? '#1F1F26' : 'transparent',
+        },
+      })),
+      showDash: s.screen === 'dash',
+      showReplay: s.screen === 'replay',
+      showStub: !!stubTitles[s.screen],
+      stubTitle: stubTitles[s.screen] || '',
+      metricCards, hasHoldings: !empty, noHoldings: empty, holdRows,
+      rowPad: compact ? '6px' : '10px',
+      fillRows: this.fills.map(f => ({
+        ...f,
+        badgeStyle: {
+          fontSize: '11px', fontWeight: 700, padding: '2px 7px', borderRadius: '6px',
+          color: f.side === '매수' ? buyC : sellC,
+          background: f.side === '매수' ? 'rgba(240,68,82,0.12)' : 'rgba(49,130,246,0.12)',
+        },
+      })),
+      periodBtns: ['1M', '3M', '1Y'].map(p => ({ label: p, go: () => this.setState({ period: p }), style: this.seg(s.period === p) })),
+      dashRef: this.dashRef, replayRef: this.replayRef,
+      dateOpts: [{ v: '2026-07-31' }, { v: '2026-07-30' }, { v: '2026-07-29' }],
+      stockOpts: this.stocks,
+      rDate: s.rDate, onDate: e => { clearInterval(this._timer); this.setState({ rDate: e.target.value, idx: 0, playing: false, done: false, trades: [], pos: { qty: 0, avg: 0 }, realized: 0, buyTurnover: 0 }); },
+      rStock: s.rStock, onStock: e => { clearInterval(this._timer); this.setState({ rStock: e.target.value, idx: 0, playing: false, done: false, trades: [], pos: { qty: 0, avg: 0 }, realized: 0, buyTurnover: 0 }); },
+      rStockName: st.name,
+      togglePlay: this.togglePlay,
+      playLabel: s.done ? '↺ 다시 재생' : s.playing ? '⏸ 일시정지' : '▶ 재생',
+      speedBtns: [1, 10, 60].map(v => ({
+        label: v + 'x',
+        go: () => { this.setState({ speed: v }); this.setTimer(this.state.playing, v); },
+        style: this.seg(s.speed === v),
+      })),
+      idx: s.idx,
+      onScrub: e => { const v = +e.target.value; this.setState({ idx: v, done: v >= 390 }); },
+      clock,
+      curPriceFmt: this.won(cur), curChange: this.pct(chg), curColor: this.clr(chg),
+      sessionDone: s.done,
+      sumPL: this.sgnWon(s.realized), sumRate: this.pct(sumRate), sumColor: this.clr(s.realized), sumTrades: s.trades.length + '회',
+      resetSession: this.resetSession,
+      setBuy: () => this.setState({ side: 'buy' }), setSell: () => this.setState({ side: 'sell' }),
+      buyTabStyle: { ...this.seg(s.side === 'buy', buyC), flex: 1, height: '34px', fontSize: '13px' },
+      sellTabStyle: { ...this.seg(s.side === 'sell', sellC), flex: 1, height: '34px', fontSize: '13px' },
+      setMarket: () => this.setState({ oType: 'market' }),
+      setLimit: () => this.setState({ oType: 'limit', limitPx: s.limitPx || String(cur) }),
+      marketStyle: { ...this.seg(s.oType === 'market'), flex: 1, border: '1px solid ' + (s.oType === 'market' ? '#3C3C46' : '#26262E'), background: s.oType === 'market' ? '#26262E' : '#111114' },
+      limitStyle: { ...this.seg(s.oType === 'limit'), flex: 1, border: '1px solid ' + (s.oType === 'limit' ? '#3C3C46' : '#26262E'), background: s.oType === 'limit' ? '#26262E' : '#111114' },
+      isLimit: s.oType === 'limit',
+      limitPx: s.limitPx, onLimitPx: e => this.setState({ limitPx: e.target.value }),
+      qty: s.qty, onQty: e => this.setState({ qty: e.target.value }),
+      oPxFmt: this.won(oPx), oAmtFmt: this.won(amt), oFeeFmt: this.won(fee),
+      oTaxFmt: s.side === 'sell' ? this.won(tax) : '—',
+      oTotalLabel: s.side === 'buy' ? '총 매수금액' : '총 매도금액(세후)',
+      oTotalFmt: this.won(oTotal), oSideColor: s.side === 'buy' ? buyC : sellC,
+      posLine: s.pos.qty > 0 ? s.pos.qty.toLocaleString('ko-KR') + '주 · 평단 ' + this.won(s.pos.avg) : '없음',
+      placeOrder: this.placeOrder,
+      orderBtnStyle: {
+        height: '42px', borderRadius: '10px', border: 'none', cursor: 'pointer',
+        fontSize: '14px', fontWeight: 700, color: '#fff',
+        background: s.side === 'buy' ? buyC : sellC,
+      },
+      orderBtnLabel: st.name + ' ' + (s.side === 'buy' ? '매수' : '매도'),
+      hasToast: !!s.toast, toastMsg: s.toast ? s.toast.msg : '', toastDot: s.toast ? s.toast.dot : '#8B8D98',
+      hasModal: s.modal, closeModal: () => this.setState({ modal: false }),
+    };
+  }
+}
+</script>
+</body>
+</html>

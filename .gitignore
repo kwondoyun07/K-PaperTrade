@@ -1,0 +1,20 @@
+# Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# env
+.env
+.env.local
+.env*.local
+
+# Python
+__pycache__/
+.venv/
+*.pyc
+
+# 수집 데이터 (parquet는 GitHub Release로만 배포)
+data/
+*.parquet
