@@ -147,6 +147,74 @@ def upsert_indices(db: Turso, date: str) -> None:
     log.info("indices upsert: %d행", len(stmts))
 
 
+def snapshot_accounts(tdb: Turso, close_map: dict[str, int], date: str) -> None:
+    """계좌별 평가액(현금+보유×당일 종가)을 portfolio_snapshots에 upsert (ts = date 15:30)."""
+    accounts = tdb.query("SELECT id, cash FROM accounts")
+    positions = tdb.query(
+        "SELECT owner_id, ticker, qty, avg_price FROM positions WHERE owner_type = 'ACCOUNT' AND qty > 0"
+    )
+    by_acct: dict[int, list[dict]] = {}
+    for p in positions:
+        by_acct.setdefault(int(p["owner_id"]), []).append(p)
+    ts = f"{date} 15:30"
+    stmts = []
+    for a in accounts:
+        aid = int(a["id"])
+        value = sum(
+            int(p["qty"]) * int(close_map.get(str(p["ticker"]), p["avg_price"]))
+            for p in by_acct.get(aid, [])
+        )
+        stmts.append(
+            (
+                "INSERT INTO portfolio_snapshots (owner_type, owner_id, ts, equity, cash) "
+                "VALUES ('ACCOUNT', ?, ?, ?, ?) "
+                "ON CONFLICT(owner_type, owner_id, ts) DO UPDATE SET equity=excluded.equity, cash=excluded.cash",
+                (aid, ts, int(a["cash"]) + value, int(a["cash"])),
+            )
+        )
+    if stmts:
+        tdb.execute_batch(stmts)
+    log.info("portfolio_snapshots: %d계좌 기록", len(stmts))
+
+
+def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
+    """ai_decisions의 판단 이후 수익률(ret_d5/d20/d60, %)을 거래일 기준으로 채운다.
+
+    기준가 = 판단일(이후 첫 거래일) 종가. n거래일 뒤 종가가 쌓이면 그때 채워진다.
+    """
+    from bisect import bisect_left
+
+    pending = tdb.query(
+        "SELECT id, ticker, ts, ret_d5, ret_d20, ret_d60 FROM ai_decisions "
+        "WHERE ret_d5 IS NULL OR ret_d20 IS NULL OR ret_d60 IS NULL"
+    )
+    if not pending:
+        return
+    by_ticker: dict[str, list[dict]] = {}
+    for d in pending:
+        by_ticker.setdefault(str(d["ticker"]), []).append(d)
+    updated = 0
+    for ticker, items in by_ticker.items():
+        closes = mdb.query(
+            "SELECT date, close FROM daily_prices WHERE ticker = ? ORDER BY date", (ticker,)
+        )
+        dates = [str(r["date"]) for r in closes]
+        for d in items:
+            idx = bisect_left(dates, str(d["ts"])[:10])
+            if idx >= len(dates):
+                continue
+            base = int(closes[idx]["close"])
+            sets, args = [], []
+            for n, col in ((5, "ret_d5"), (20, "ret_d20"), (60, "ret_d60")):
+                if d[col] is None and idx + n < len(dates) and base > 0:
+                    sets.append(f"{col} = ?")
+                    args.append((int(closes[idx + n]["close"]) / base - 1) * 100)
+            if sets:
+                tdb.execute(f"UPDATE ai_decisions SET {', '.join(sets)} WHERE id = ?", (*args, int(d["id"])))
+                updated += 1
+    log.info("ai_decisions 수익률 갱신: %d건", updated)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # 요청당 INFO 로그 억제
@@ -215,6 +283,20 @@ def main() -> int:
         cutoff = (datetime.now(KST) - timedelta(days=10)).strftime("%Y-%m-%d")
         db.execute("DELETE FROM minute_prices WHERE ts < ?", (cutoff,))
         log.info("minute_prices 캐시 정리: %s 이전 삭제", cutoff)
+
+        # 계좌 스냅샷 + AI 판단 수익률 배치 (trading DB)
+        tdb = Turso.from_env("TRADING")
+        if tdb is None:
+            log.warning("TURSO_TRADING_* env 미설정 — 스냅샷·AI 수익률 배치 건너뜀")
+        else:
+            if rows:
+                snapshot_accounts(tdb, {r[0]: r[5] for r in rows}, date)
+            else:
+                log.warning("일봉 0행 — 계좌 스냅샷 건너뜀")
+            try:
+                update_ai_returns(tdb, db)
+            except Exception as e:
+                log.warning("AI 수익률 배치 실패 — 스킵: %s", e)
 
     # 2) 분봉 → parquet → Release
     if not skip_minute:

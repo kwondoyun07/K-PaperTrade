@@ -73,7 +73,9 @@ uv run python test_parse.py
   `minute-YYYY-MM`)에 보관한다. Turso 무료 쓰기 한도(월 1,000만 행) 보호 목적.
 - 네이버 분봉은 **최근 ~6거래일만** 제공되므로(2026-08-01 실측) 일일 적재가
   누락되면 그 날짜 분봉은 복구 불가. Actions cron이 핵심이다.
-- GitHub Actions 시크릿 필요: `TURSO_KRX_MARKET_URL`, `TURSO_KRX_MARKET_AUTH_TOKEN`.
+- GitHub Actions 시크릿: `TURSO_KRX_MARKET_URL`, `TURSO_KRX_MARKET_AUTH_TOKEN`,
+  `TURSO_TRADING_URL`, `TURSO_TRADING_AUTH_TOKEN`(스냅샷·AI 수익률 배치),
+  `TURSO_API_TOKEN`(주간 덤프 backup.yml).
 - pykrx(KRX 포털) 벌크 API가 불안정할 때: 일봉은 FDR 스냅샷 폴백(당일만),
   지수는 FDR(KS11/KQ11) 단독, 수급은 실패 시 스킵(보조 데이터).
 
@@ -97,6 +99,6 @@ uv run python test_parse.py
 - [x] 3단계: 체결 엔진(`lib/engine/`, 순수 함수) + vitest 18케이스 — [docs/engine.md](docs/engine.md)
 - [x] 4단계: API Routes(zod) + 리플레이 세션(서버측 커서 컷) + 인증 미들웨어 — [docs/api.md](docs/api.md)
 - [x] 5단계: 화면 5개 실데이터 연결 + 장중 폴링(장시간 유틸) — [docs/screens.md](docs/screens.md)
-- [ ] 6단계: 성과 지표 + ai_decisions 수익률 배치
+- [x] 6단계: 성과 지표(MDD·샤프·누적) + 계좌 일일 스냅샷 + ai_decisions 수익률 배치 + 주간 Turso 덤프 워크플로
 
 v1 범위 밖(미구현): VI(변동성완화장치), 동시호가, 공매도, 실거래 연동.

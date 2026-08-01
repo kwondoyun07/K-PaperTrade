@@ -1,6 +1,7 @@
-// 수익률 곡선 + 벤치마크. MDD·샤프 등 지표 계산은 6단계에서 추가.
+// 수익률 곡선 + 벤치마크 + 지표(MDD·샤프·누적수익률)
 import { NextResponse } from "next/server";
 import { marketDb, tradingDb } from "@/lib/db";
+import { dailyReturns, maxDrawdownPct, sharpeRatio } from "@/lib/metrics";
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
@@ -17,5 +18,16 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
         })
       ).rows
     : [];
-  return NextResponse.json({ snapshots: snaps.rows, indices });
+
+  const equity = snaps.rows.map((r) => Number(r.equity));
+  const metrics =
+    equity.length >= 2
+      ? {
+          returnPct: equity[0] > 0 ? (equity[equity.length - 1] / equity[0] - 1) * 100 : 0,
+          mddPct: maxDrawdownPct(equity),
+          sharpe: sharpeRatio(dailyReturns(equity)),
+        }
+      : null;
+
+  return NextResponse.json({ snapshots: snaps.rows, indices, metrics });
 }

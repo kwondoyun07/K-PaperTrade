@@ -9,6 +9,7 @@ import { j, type OrderRow, type Portfolio } from "./client";
 type Account = { id: number; name: string; initial_cash: number };
 type Snapshot = { ts: string; equity: number };
 type IndexRow = { code: string; date: string; close: number };
+type Metrics = { returnPct: number; mddPct: number; sharpe: number | null } | null;
 
 function drawCurve(cv: HTMLCanvasElement, snaps: Snapshot[], indices: IndexRow[], initial: number) {
   const c = setupCanvas(cv);
@@ -78,7 +79,7 @@ export default function Dashboard({
 }) {
   const [pf, setPf] = useState<Portfolio | null>(null);
   const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [perf, setPerf] = useState<{ snapshots: Snapshot[]; indices: IndexRow[] }>({ snapshots: [], indices: [] });
+  const [perf, setPerf] = useState<{ snapshots: Snapshot[]; indices: IndexRow[]; metrics?: Metrics }>({ snapshots: [], indices: [] });
   const [names, setNames] = useState<Record<string, string>>({});
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -87,7 +88,7 @@ export default function Dashboard({
     const [p, o, pe] = await Promise.all([
       j<Portfolio>(`/api/v1/accounts/${account.id}/portfolio`),
       j<{ orders: OrderRow[] }>(`/api/v1/orders?account_id=${account.id}`),
-      j<{ snapshots: Snapshot[]; indices: IndexRow[] }>(`/api/v1/accounts/${account.id}/performance`),
+      j<{ snapshots: Snapshot[]; indices: IndexRow[]; metrics?: Metrics }>(`/api/v1/accounts/${account.id}/performance`),
     ]);
     setPf(p);
     setOrders(o.orders);
@@ -158,6 +159,22 @@ export default function Dashboard({
               </span>
             </div>
           </div>
+          {perf.metrics && (
+            <div style={{ display: "flex", gap: 14, fontSize: 12, color: "#8B8D98" }}>
+              <span>
+                MDD <span style={{ color: "#E8E8EC", fontWeight: 600 }}>{perf.metrics.mddPct.toFixed(2)}%</span>
+              </span>
+              <span>
+                샤프{" "}
+                <span style={{ color: "#E8E8EC", fontWeight: 600 }}>
+                  {perf.metrics.sharpe == null ? "—" : perf.metrics.sharpe.toFixed(2)}
+                </span>
+              </span>
+              <span>
+                누적 <span style={{ color: clr(perf.metrics.returnPct), fontWeight: 600 }}>{pct(perf.metrics.returnPct)}</span>
+              </span>
+            </div>
+          )}
         </div>
         {hasCurve ? (
           <canvas ref={ref} style={{ width: "100%", height: 250, display: "block" }} />
