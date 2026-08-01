@@ -44,7 +44,10 @@
 ```sh
 pnpm install
 pnpm dev        # http://localhost:3000
+pnpm test       # 체결 엔진 vitest
 ```
+
+상세 문서는 [docs/](docs/) 참고 — [데이터 파이프라인](docs/data-pipeline.md) · [체결 엔진](docs/engine.md)
 
 ## 수집기 (collector)
 
@@ -90,7 +93,7 @@ uv run python test_parse.py
 - [x] 1단계: 스캐폴딩(루트 Next.js + `/collector`) + Turso 스키마 + `.env.example`
       + 디자인 시안(`K-PaperTrade.dc.html`) TS 포팅 — 현재 화면은 **더미 데이터**
 - [x] 2단계: NaverProvider(진짜 분봉 OHLC) + 전 종목 백필 + parquet/Release + 일봉·수급·지수 수집 (GitHub Actions)
-- [ ] 3단계: 체결 엔진 + vitest (상·하한가 거부, 수수료·거래세, 호가단위, 다음 분봉 체결, 룩어헤드 차단)
+- [x] 3단계: 체결 엔진(`lib/engine/`, 순수 함수) + vitest 18케이스 — [docs/engine.md](docs/engine.md)
 - [ ] 4단계: API Routes + 리플레이 세션 (서버측 커서 컷)
 - [ ] 5단계: 화면 실데이터 연결 + 장중 폴링
 - [ ] 6단계: 성과 지표 + ai_decisions 수익률 배치
