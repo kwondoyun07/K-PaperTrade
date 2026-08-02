@@ -137,16 +137,23 @@ class KiwoomProvider:
         raise RuntimeError(f"{ticker}: 유량 초과로 재시도 실패")
 
     def get_minute_bars(
-        self, ticker: str, date: str | None = None, since: str | None = None, max_pages: int = 200
+        self,
+        ticker: str,
+        date: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        max_pages: int = 400,
     ) -> list[MinuteBar]:
         """분봉 조회 (시각 오름차순).
 
         date  — 'YYYY-MM-DD' 해당 하루만
-        since — 'YYYY-MM-DD' 그 날짜 이후 전부 (히스토리 백필용)
-        둘 다 없으면 첫 페이지(최근 900건)만.
+        since — 'YYYY-MM-DD' 그 날짜 **이후** 전부 (히스토리 백필용)
+        until — 'YYYY-MM-DD' 그 날짜 **이하**만 (이미 확보한 구간과 겹치지 않게 자를 때)
+        date·since 둘 다 없으면 첫 페이지(최근 900건)만.
         """
         target = (date or "").replace("-", "")
         floor = (since or date or "").replace("-", "")
+        ceil = (until or "").replace("-", "")
         bars: list[MinuteBar] = []
         cont_yn, next_key = "N", ""
 
@@ -163,6 +170,8 @@ class KiwoomProvider:
                 if target and d8 != target:
                     continue
                 if floor and d8 < floor:
+                    continue
+                if ceil and d8 > ceil:
                     continue
                 ts = f"{t[0:4]}-{t[4:6]}-{t[6:8]} {t[8:10]}:{t[10:12]}"
                 bars.append(
