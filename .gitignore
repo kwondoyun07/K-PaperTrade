@@ -17,6 +17,7 @@ __pycache__/
 
 # 수집 데이터 (parquet는 GitHub Release로만 배포)
 data/
+.data/ # 로컬 SQLite 폴백(krx_market.db·trading.db) — 계좌·주문 데이터가 커밋되면 안 된다
 *.parquet
 .gstack/
 

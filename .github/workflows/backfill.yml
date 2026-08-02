@@ -43,9 +43,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
+          # 입력을 셸에 직접 보간하면 따옴표를 탈출한 주입이 가능하다 — env+인용+검증
+          IN_TOP: ${{ inputs.top }}
+          IN_SINCE: ${{ inputs.since }}
+          IN_UNTIL: ${{ inputs.until }}
         run: |
-          uv run python backfill.py \
-            --top "${{ inputs.top }}" \
-            --since "${{ inputs.since }}" \
-            --until "${{ inputs.until }}" \
-            --upload
+          case "$IN_TOP" in ""|*[!0-9]*) echo "잘못된 top: $IN_TOP" >&2; exit 1 ;; esac
+          case "$IN_SINCE" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "잘못된 since: $IN_SINCE" >&2; exit 1 ;; esac
+          case "$IN_UNTIL" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "잘못된 until: $IN_UNTIL" >&2; exit 1 ;; esac
+          uv run python backfill.py --top "$IN_TOP" --since "$IN_SINCE" --until "$IN_UNTIL" --upload
