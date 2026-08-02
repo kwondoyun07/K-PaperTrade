@@ -7,6 +7,7 @@ import { getMinuteBars } from "@/lib/minutes";
 import { addMinutes, cutBars } from "@/lib/engine/settle";
 import { getPositions, settleOwnerOrders } from "@/lib/trading";
 import { jerr } from "@/lib/api";
+import { caller, guardOwner } from "@/lib/owner";
 
 const Tick = z.object({
   minutes: z.number().int().min(1).max(390).default(1),
@@ -15,6 +16,8 @@ const Tick = z.object({
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  const denied = await guardOwner(await caller(req), "replay_sessions", Number(id));
+  if (denied) return denied;
   const body = Tick.safeParse(await req.json().catch(() => ({})));
   if (!body.success) return jerr(body.error.issues[0].message);
 
