@@ -3,9 +3,12 @@ import { NextResponse } from "next/server";
 import { tradingDb } from "@/lib/db";
 import { getPositions } from "@/lib/trading";
 import { jerr } from "@/lib/api";
+import { caller, guardOwner } from "@/lib/owner";
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  const denied = await guardOwner(await caller(req), "replay_sessions", Number(id));
+  if (denied) return denied;
   const rs = await tradingDb().execute({
     sql: "SELECT id, name, date, tickers, cursor_ts, initial_cash, cash, status, result_json FROM replay_sessions WHERE id = ?",
     args: [Number(id)],

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { tradingDb } from "@/lib/db";
 import { placeOrder } from "@/lib/trading";
 import { jerr } from "@/lib/api";
+import { caller, guardOwner } from "@/lib/owner";
 
 const ReplayOrder = z.object({
   ticker: z.string().regex(/^\d{6}$/),
@@ -16,6 +17,8 @@ const ReplayOrder = z.object({
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  const denied = await guardOwner(await caller(req), "replay_sessions", Number(id));
+  if (denied) return denied;
   const body = ReplayOrder.safeParse(await req.json().catch(() => null));
   if (!body.success) return jerr(body.error.issues[0].message);
 
