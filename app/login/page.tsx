@@ -9,6 +9,7 @@ export default async function Login({
 }) {
   const { error } = await searchParams;
   if (await auth()) redirect("/");
+  const configured = !!process.env.AUTH_GOOGLE_ID;
 
   return (
     <main style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -33,6 +34,14 @@ export default async function Login({
           </span>
         )}
 
+        {!configured && (
+          <span style={{ fontSize: 12, color: "#E8C55A", textAlign: "center", lineHeight: 1.6 }}>
+            Google 로그인이 아직 설정되지 않았습니다.
+            <br />
+            AUTH_GOOGLE_ID·AUTH_GOOGLE_SECRET을 등록해 주세요.
+          </span>
+        )}
+
         <form
           style={{ width: "100%" }}
           action={async () => {
@@ -42,10 +51,12 @@ export default async function Login({
         >
           <button
             type="submit"
+            disabled={!configured}
             style={{
               width: "100%", height: 42, borderRadius: 10, border: "1px solid #2C2C36",
               background: "#fff", color: "#1a1a1a", fontSize: 14, fontWeight: 600,
-              cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+              cursor: configured ? "pointer" : "not-allowed", opacity: configured ? 1 : 0.5,
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
             }}
           >
             <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden>
