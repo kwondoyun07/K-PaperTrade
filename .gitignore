@@ -23,3 +23,6 @@ data/
 # Playwright
 test-results/
 playwright-report/
+
+# Vercel (.env* 규칙은 위 env 섹션에 있음 — .env.example은 추적해야 하므로 추가 금지)
+.vercel

@@ -88,17 +88,31 @@ uv run python test_parse.py
 
 ## 배포 (Vercel)
 
-1. Vercel에서 이 저장소를 임포트 (Framework: Next.js, 기본 설정 그대로)
-2. 환경변수 등록 — 전부 **서버 전용**, `NEXT_PUBLIC_` 금지:
-   - `TURSO_KRX_MARKET_URL`, `TURSO_KRX_MARKET_AUTH_TOKEN`
-   - `TURSO_TRADING_URL`, `TURSO_TRADING_AUTH_TOKEN`
-   - `APP_PASSWORD` — 공개 URL에 붙는 순간 필수 (미설정 = 인증 없음)
-   - `GITHUB_REPO=kwondoyun07/K-PaperTrade`
-   - `GITHUB_RELEASE_TOKEN` — 비공개 저장소이므로 필수
-     (fine-grained PAT, 이 저장소 Contents: Read-only)
+**배포 완료**: https://k-papertrade-pdv0emteh-bluehab28-webs-projects.vercel.app
+(비밀번호는 로컬 `.env`의 `APP_PASSWORD`)
 
-저장소를 공개로 바꾸면 `GITHUB_RELEASE_TOKEN` 없이도 분봉을 읽는다:
-`gh repo edit --visibility public` (되돌릴 수 없으니 신중히).
+재배포·환경변수 관리는 CLI로 한다:
+
+```sh
+vercel deploy --prod        # 프로덕션 배포
+vercel env ls production    # 등록된 환경변수 확인
+printf '%s' "새값" | vercel env add APP_PASSWORD production --force
+```
+
+프로덕션 환경변수 — 전부 **서버 전용**, `NEXT_PUBLIC_` 금지:
+
+| 이름 | 비고 |
+|---|---|
+| `TURSO_KRX_MARKET_URL` / `_AUTH_TOKEN` | 시세 DB |
+| `TURSO_TRADING_URL` / `_AUTH_TOKEN` | 계좌·주문 DB |
+| `APP_PASSWORD` | 미설정 = 인증 없음. 공개 URL이므로 필수 |
+| `GITHUB_REPO` | `kwondoyun07/K-PaperTrade` |
+| `GITHUB_RELEASE_TOKEN` | 비공개 저장소라 필수. 현재 gh CLI 토큰을 쓰고 있으니 fine-grained PAT(Contents: Read-only)로 교체 권장 |
+
+- Vercel 기본 배포 보호(SSO)는 해제되어 있다. 앱 자체 비밀번호로만 보호되므로
+  `APP_PASSWORD`를 비우지 말 것.
+- 저장소를 공개로 바꾸면 `GITHUB_RELEASE_TOKEN` 없이도 분봉을 읽고 Actions 분수가
+  무제한이 된다: `gh repo edit --visibility public` (되돌릴 수 없으니 신중히).
 
 ## 브랜치 전략
 
