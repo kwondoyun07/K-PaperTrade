@@ -135,11 +135,15 @@ export async function settleOwnerOrders(owner: Owner, cursor?: string): Promise<
     const r = settlePending(order, orderedAt, bars, pdc);
     if (r.status === "PENDING") continue;
 
+    // 상태 가드가 핵심이다. 장중 폴링(/quotes)과 배치 정산(/cron/settle)이 같은
+    // PENDING 주문을 동시에 집을 수 있는데, 가드가 없으면 둘 다 체결시켜
+    // executions가 두 번 쌓이고 현금이 두 번 빠진다. rowsAffected로 선점을 확인한다.
     if (r.status === "REJECTED") {
-      await db.execute({
-        sql: "UPDATE orders SET status = 'REJECTED', reject_reason = ? WHERE id = ?",
+      const upd = await db.execute({
+        sql: "UPDATE orders SET status = 'REJECTED', reject_reason = ? WHERE id = ? AND status = 'PENDING'",
         args: [r.reason, Number(row.id)],
       });
+      if (upd.rowsAffected === 0) continue; // 다른 경로가 이미 확정했다
       results.push({ orderId: Number(row.id), ticker, side: order.side, status: "REJECTED", reason: r.reason });
       continue;
     }
@@ -148,19 +152,16 @@ export async function settleOwnerOrders(owner: Owner, cursor?: string): Promise<
     const amount = price * qty;
     const cash = await ownerCash(owner);
     if (order.side === "BUY" && amount + commission > cash) {
-      await db.execute({
-        sql: "UPDATE orders SET status = 'REJECTED', reject_reason = '현금부족' WHERE id = ?",
+      const upd = await db.execute({
+        sql: "UPDATE orders SET status = 'REJECTED', reject_reason = '현금부족' WHERE id = ? AND status = 'PENDING'",
         args: [Number(row.id)],
       });
+      if (upd.rowsAffected === 0) continue;
       results.push({ orderId: Number(row.id), ticker, side: order.side, status: "REJECTED", reason: "현금부족" });
       continue;
     }
 
     const stmts = [
-      {
-        sql: "UPDATE orders SET status = 'FILLED' WHERE id = ?",
-        args: [Number(row.id)],
-      },
       {
         sql: "INSERT INTO executions (order_id, price, qty, commission, tax, executed_at) VALUES (?, ?, ?, ?, ?, ?)",
         args: [Number(row.id), price, qty, commission, tax, ts],
@@ -193,7 +194,24 @@ export async function settleOwnerOrders(owner: Owner, cursor?: string): Promise<
         },
       );
     }
-    await db.batch(stmts, "write");
+    // 선점(PENDING→FILLED)과 부수효과를 한 트랜잭션에 묶는다. 선점에 실패하면
+    // 다른 경로가 이미 처리한 주문이므로 아무것도 반영하지 않고 롤백한다.
+    const tx = await db.transaction("write");
+    try {
+      const claim = await tx.execute({
+        sql: "UPDATE orders SET status = 'FILLED' WHERE id = ? AND status = 'PENDING'",
+        args: [Number(row.id)],
+      });
+      if (claim.rowsAffected === 0) {
+        await tx.rollback();
+        continue;
+      }
+      for (const s of stmts) await tx.execute(s);
+      await tx.commit();
+    } catch (e) {
+      await tx.rollback().catch(() => {});
+      throw e;
+    }
     results.push({ orderId: Number(row.id), ticker, side: order.side, status: "FILLED", price, qty, ts });
   }
   return results;
