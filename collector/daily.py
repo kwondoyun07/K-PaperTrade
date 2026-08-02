@@ -10,7 +10,8 @@ Turso 적재를 분봉보다 먼저 실행한다 — 소스가 서로 무관하�
 업스트림 내구성 (2026-08-01 실측 기준):
 - 휴장 판정: 네이버 분봉(005930) + FDR KS11 교차 확인 — 분봉이 없어도 KS11에
   데이터가 있으면 거래일(업스트림 이상 또는 제공범위 밖)로 구분한다
-- 일봉: pykrx 벌크가 1순위, 실패 시 FDR KRX 스냅샷 폴백(당일 실행일 때만 유효)
+- 일봉: pykrx 벌크 1순위 → FDR KRX 스냅샷(당일만) → 방금 수집한 분봉에서 파생(최후).
+  분봉 파생은 수집이 끝난 뒤에 시도하므로 순서상 마지막에 복구된다
 - 지수: FDR(KS11/KQ11, 네이버 소스) 단독 — pykrx 지수 API는 빈 응답 확인됨
 - 수급: pykrx만 가능 — 실패 시 경고 후 스킵(보조 데이터, 과거분 갭 허용)
 
@@ -26,9 +27,11 @@ import argparse
 import logging
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import FinanceDataReader as fdr
+import pandas as pd
 from pykrx import stock as krx
 
 from backfill import collect_minutes
@@ -69,8 +72,29 @@ def upsert_stocks(db: Turso, stocks: list[dict], now: str) -> None:
     log.info("stocks upsert: %d행 (+미등재 종목 비활성화)", len(stocks))
 
 
-def daily_price_rows(date: str, date8: str, today: str, listing) -> list[tuple]:
-    """일봉 행 수집: pykrx 벌크 → 실패 시 FDR 스냅샷 폴백(당일만)."""
+def rows_from_parquet(date: str, out_dir: str | Path) -> list[tuple]:
+    """방금 수집한 분봉에서 일봉을 파생 — pykrx·FDR이 모두 막혔을 때의 최후 수단.
+
+    시가=첫 분봉 시가, 고/저=최대/최소, 종가=마지막 분봉 종가(15:30 종가단일가),
+    거래량=합계. 장외·시간외 거래가 빠지므로 KRX 공식 일봉과 거래량이 미세하게
+    다를 수 있다 — 그래도 일봉이 통째로 비는 것보다 낫다(분봉은 소급 수집 불가).
+    """
+    p = Path(out_dir) / f"minute-{date}.parquet"
+    if not p.exists():
+        return []
+    df = pd.read_parquet(p).sort_values("ts")
+    rows = []
+    for tkr, g in df.groupby("ticker", sort=True):
+        rows.append(
+            (str(tkr), date, int(g["open"].iloc[0]), int(g["high"].max()),
+             int(g["low"].min()), int(g["close"].iloc[-1]), int(g["volume"].sum()))
+        )
+    log.warning("분봉에서 일봉 파생: %d종목 (거래량은 장중 합계)", len(rows))
+    return rows
+
+
+def daily_price_rows(date: str, date8: str, today: str, listing, out_dir: str | Path) -> list[tuple]:
+    """일봉 수집: pykrx 벌크 → FDR 스냅샷(당일만) → 분봉 파생(최후)."""
     try:
         df = krx.get_market_ohlcv(date8, market="ALL")
         if df.empty:
@@ -81,15 +105,14 @@ def daily_price_rows(date: str, date8: str, today: str, listing) -> list[tuple]:
             for t, r in df.iterrows()
         ]
     except Exception as e:
-        log.warning("pykrx 일봉 실패(%s) — FDR 스냅샷 폴백", e)
-    if date != today:
+        log.warning("pykrx 일봉 실패(%s) — 폴백 시도", e)
+    if date == today:
         # 스냅샷은 최근 거래일 값이라 과거 일자엔 못 쓴다
-        log.error("과거 일자(%s) 일봉 폴백 불가", date)
-        return []
-    return [
-        (str(r.Code), date, int(r.Open), int(r.High), int(r.Low), int(r.Close), int(r.Volume))
-        for r in listing.itertuples()
-    ]
+        return [
+            (str(r.Code), date, int(r.Open), int(r.High), int(r.Low), int(r.Close), int(r.Volume))
+            for r in listing.itertuples()
+        ]
+    return rows_from_parquet(date, out_dir)
 
 
 def load_flows(date8: str) -> dict[str, dict[str, int]]:
@@ -264,13 +287,13 @@ def main() -> int:
         upsert_stocks(db, stocks, now)
 
         valid = {s["ticker"] for s in stocks}
-        rows = [r for r in daily_price_rows(date, date8, today, listing) if r[0] in valid]
+        rows = [r for r in daily_price_rows(date, date8, today, listing, a.out) if r[0] in valid]
         if rows:
             db.execute_batch([(DAILY_UPSERT, r) for r in rows])
             log.info("daily_prices upsert: %d행", len(rows))
         else:
-            log.error("거래일인데 daily_prices 0행 — 실패 처리")
-            rc = 1
+            # 아직 실패로 확정하지 않는다 — 분봉 수집 후 파생 폴백이 남아 있다
+            log.warning("일봉 0행 — 분봉 수집 후 파생 재시도 예정")
 
         try:
             upsert_flows(db, date, load_flows(date8))
@@ -284,20 +307,6 @@ def main() -> int:
         db.execute("DELETE FROM minute_prices WHERE ts < ?", (cutoff,))
         log.info("minute_prices 캐시 정리: %s 이전 삭제", cutoff)
 
-        # 계좌 스냅샷 + AI 판단 수익률 배치 (trading DB)
-        tdb = Turso.from_env("TRADING")
-        if tdb is None:
-            log.warning("TURSO_TRADING_* env 미설정 — 스냅샷·AI 수익률 배치 건너뜀")
-        else:
-            if rows:
-                snapshot_accounts(tdb, {r[0]: r[5] for r in rows}, date)
-            else:
-                log.warning("일봉 0행 — 계좌 스냅샷 건너뜀")
-            try:
-                update_ai_returns(tdb, db)
-            except Exception as e:
-                log.warning("AI 수익률 배치 실패 — 스킵: %s", e)
-
     # 2) 분봉 → parquet → Release
     if not skip_minute:
         files, failed = collect_minutes(provider, tickers, a.out, date)
@@ -310,6 +319,31 @@ def main() -> int:
             except Exception as e:
                 log.error("release 업로드 실패: %s", e)
                 rc = 1
+
+    # 3) 일봉 최후 폴백 — pykrx·FDR이 모두 막혔으면 방금 수집한 분봉에서 파생
+    if db is not None:
+        if not rows and not a.tickers:
+            rows = [r for r in rows_from_parquet(date, a.out) if r[0] in valid]
+            if rows:
+                db.execute_batch([(DAILY_UPSERT, r) for r in rows])
+                log.info("daily_prices upsert(분봉 파생): %d행", len(rows))
+        if not rows:
+            log.error("거래일인데 daily_prices 0행 — 실패 처리")
+            rc = 1
+
+        # 4) 계좌 스냅샷 + AI 판단 수익률 배치 (trading DB)
+        tdb = Turso.from_env("TRADING")
+        if tdb is None:
+            log.warning("TURSO_TRADING_* env 미설정 — 스냅샷·AI 수익률 배치 건너뜀")
+        else:
+            if rows:
+                snapshot_accounts(tdb, {r[0]: r[5] for r in rows}, date)
+            else:
+                log.warning("일봉 0행 — 계좌 스냅샷 건너뜀")
+            try:
+                update_ai_returns(tdb, db)
+            except Exception as e:
+                log.warning("AI 수익률 배치 실패 — 스킵: %s", e)
     return rc
 
 
