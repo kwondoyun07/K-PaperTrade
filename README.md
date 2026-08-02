@@ -88,8 +88,7 @@ uv run python test_parse.py
 
 ## 배포 (Vercel)
 
-**배포 완료**: https://k-papertrade-pdv0emteh-bluehab28-webs-projects.vercel.app
-(비밀번호는 로컬 `.env`의 `APP_PASSWORD`)
+**배포 완료**: https://k-papertrade.vercel.app (Google 로그인)
 
 재배포·환경변수 관리는 CLI로 한다:
 
@@ -105,14 +104,28 @@ printf '%s' "새값" | vercel env add APP_PASSWORD production --force
 |---|---|
 | `TURSO_KRX_MARKET_URL` / `_AUTH_TOKEN` | 시세 DB |
 | `TURSO_TRADING_URL` / `_AUTH_TOKEN` | 계좌·주문 DB |
-| `APP_PASSWORD` | 미설정 = 인증 없음. 공개 URL이므로 필수 |
+| `AUTH_SECRET` | Auth.js 세션 서명 키 (`openssl rand -base64 32`) |
+| `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` | Google OAuth 클라이언트 |
+| `ALLOWED_EMAILS` | 로그인 허용 이메일(쉼표 구분). **비면 아무도 못 들어온다** |
 | `GITHUB_REPO` | `kwondoyun07/K-PaperTrade` |
-| `GITHUB_RELEASE_TOKEN` | 비공개 저장소라 필수. 현재 gh CLI 토큰을 쓰고 있으니 fine-grained PAT(Contents: Read-only)로 교체 권장 |
+| `GITHUB_RELEASE_TOKEN` | 저장소가 공개라 지금은 불필요(비공개 복귀 시 필요) |
 
-- Vercel 기본 배포 보호(SSO)는 해제되어 있다. 앱 자체 비밀번호로만 보호되므로
-  `APP_PASSWORD`를 비우지 말 것.
-- 저장소를 공개로 바꾸면 `GITHUB_RELEASE_TOKEN` 없이도 분봉을 읽고 Actions 분수가
-  무제한이 된다: `gh repo edit --visibility public` (되돌릴 수 없으니 신중히).
+### Google OAuth 클라이언트 만들기
+
+[Google Cloud Console](https://console.cloud.google.com/apis/credentials) →
+**사용자 인증 정보 만들기 → OAuth 클라이언트 ID → 웹 애플리케이션**
+
+| 항목 | 값 |
+|---|---|
+| 승인된 자바스크립트 원본 | `https://k-papertrade.vercel.app` |
+| 승인된 리디렉션 URI | `https://k-papertrade.vercel.app/api/auth/callback/google` |
+
+동의 화면은 **외부(External)** + 테스트 사용자에 본인 계정만 추가하면 충분하다
+(게시 검증 불필요). 발급된 ID·시크릿을 `AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET`으로
+등록하면 로그인이 켜진다.
+
+- 로컬 개발·e2e는 `AUTH_GOOGLE_ID`가 없으면 인증을 생략한다.
+- Vercel 기본 배포 보호(SSO)는 해제되어 있고, 앱은 Google 로그인으로만 보호된다.
 
 ## 브랜치 전략
 
