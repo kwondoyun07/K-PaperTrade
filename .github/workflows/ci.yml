@@ -1,0 +1,48 @@
+# PR 검증 — main으로 가는 PR과 develop 푸시에서 빌드·테스트를 강제한다.
+# 이게 없으면 "테스트 완료 후 머지"가 사람 기억에만 의존한다.
+name: ci
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: 빌드 · 단위 테스트 (TS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # 빌드 시 Auth.js가 secret을 요구한다. 실제 값과 무관한 더미면 충분하다.
+      AUTH_SECRET: ci-dummy-secret-not-used-at-runtime
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+
+  collector:
+    name: 수집·판단 테스트 (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: collector
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
+      - run: uv sync
+      # 네트워크·시크릿 없이 도는 것만. 실제 수집은 collect 워크플로가 한다.
+      - run: uv run python test_parse.py
+      - run: uv run python test_decide.py
+      - run: uv run python test_kiwoom_order.py
