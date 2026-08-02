@@ -39,15 +39,15 @@ test("리플레이 — 세션 생성·재생·주문·체결까지", async ({ pa
   await play.click();
   await expect(page.locator("text=/^09:00$/")).toHaveCount(0, { timeout: 15_000 });
 
-  // 시장가 매수 1주
+  // 시장가 매수 1주 → 다음 tick에서 체결
   const qty = page.locator('input[placeholder="0"]:visible');
   await qty.fill("1");
   await page.locator("button:visible", { hasText: /매수$/ }).last().click();
-  await expect(page.getByText("주문 접수 — 다음 분봉에서 체결 판정")).toBeVisible({ timeout: 5_000 });
 
-  // 다음 tick에서 체결 토스트 + 보유 반영
-  await expect(page.getByText(/매수 체결 · 1주/)).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText(/1주 · 평단/)).toBeVisible({ timeout: 20_000 });
+  // "주문 접수" 토스트는 단언하지 않는다 — 10x 배속에서 450ms 뒤 tick이 돌아
+  // 체결 토스트로 교체되므로 태생적으로 레이스다. 결과(체결·보유)만 확인한다.
+  await expect(page.getByText(/매수 체결 · 1주/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/1주 · 평단/)).toBeVisible({ timeout: 30_000 });
 });
 
 test("주문·체결 / AI 판단 로그 화면", async ({ page }) => {

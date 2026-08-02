@@ -156,26 +156,15 @@ export default function Replay({
   const createdKey = useRef(""); // StrictMode 이펙트 2회 실행으로 인한 세션 중복 생성 방지
   const epoch = useRef(0); // 세션 교체 세대 — inflight 응답이 옛 세션 상태를 되살리는 것 방지
 
-  // 사용 가능한 리플레이 일자 탐색 (분봉 parquet 존재 기준)
+  // 리플레이 가능한 일자 — 서버가 parquet 존재만 확인해 한 번에 돌려준다
   useEffect(() => {
-    (async () => {
-      const found: string[] = [];
-      const today = new Date(Date.now() + 9 * 3600_000);
-      for (let i = 0; i < 12 && found.length < 6; i++) {
-        const d = new Date(today);
-        d.setUTCDate(d.getUTCDate() - i);
-        const ds = d.toISOString().slice(0, 10);
-        try {
-          const r = await j<{ bars: Bar[] }>(`/api/v1/stocks/005930/minutes?date=${ds}`);
-          if (r.bars.length) found.push(ds);
-        } catch {
-          /* skip */
-        }
-      }
-      setDates(found);
-      if (found.length) setDate((cur) => cur || found[0]);
-    })().catch(() => {});
-  }, []);
+    j<{ dates: string[] }>("/api/v1/replay/dates")
+      .then((r) => {
+        setDates(r.dates);
+        if (r.dates.length) setDate((cur) => cur || r.dates[0]);
+      })
+      .catch(() => notify("리플레이 가능 일자 조회 실패", false));
+  }, [notify]);
 
   // 종목 검색
   useEffect(() => {

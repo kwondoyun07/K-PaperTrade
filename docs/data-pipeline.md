@@ -48,6 +48,27 @@
 3. 분봉 수집(전 종목, 0.5초 간격 ≈ 23분, 연속 20회 실패 시 중단)
    → parquet → Release 업로드(기존 자산보다 5%+ 작으면 결손 의심으로 거부)
 
+## 저장소·배포 설정 (2026-08-02 기준)
+
+- GitHub: `kwondoyun07/K-PaperTrade` — **비공개**. 공개 전환은
+  `gh repo edit --visibility public` 한 줄(되돌리기 불가하므로 신중히).
+- 비공개일 때 영향:
+  - Actions 무료 2,000분/월 (일 배치 ~30분 × 21영업일 ≈ 630분 — 여유)
+  - Release 자산을 공개 URL로 못 받음 → 서버가 API로 인증 다운로드
+    (`GITHUB_RELEASE_TOKEN`, contents:read). 공개로 바꾸면 토큰 없이 동작.
+- Actions 시크릿: `TURSO_KRX_MARKET_URL/AUTH_TOKEN`,
+  `TURSO_TRADING_URL/AUTH_TOKEN`(스냅샷·AI 배치), `TURSO_API_TOKEN`(주간 덤프).
+
+### 운영 주의
+
+- **cron 60일 자동 비활성화**: 저장소에 60일간 커밋이 없으면 GitHub가
+  스케줄 워크플로를 끈다. 분봉은 소급 수집이 불가하므로(제공창 ~6거래일)
+  장기 방치 시 데이터가 끊긴다 — 주간 백업 워크플로가 매주 커밋을 남기므로
+  실질적으로 방지되지만, 백업이 실패하면 이 안전장치도 사라진다.
+- 잡 실패 시 GitHub가 저장소 소유자에게 메일을 보낸다(기본 알림). 실패를
+  놓치면 그날 분봉은 6거래일 뒤 영구 유실 — `workflow_dispatch`로 날짜를
+  지정해 재실행할 수 있는 것도 그 창 안에서만 의미가 있다.
+
 ## 프로바이더 교체 계획
 
 - v0: NaverProvider (현재)
