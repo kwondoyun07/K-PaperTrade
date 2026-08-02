@@ -1,0 +1,51 @@
+# 과거 분봉 백필 (수동 실행) — 키움 연속조회로 최대 1년치를 받아 Release에 적재.
+#
+# 실측(2026-08-02): 키움 1분봉은 정확히 1년치 제공(103페이지 92,492건에서 cont-yn=N).
+# 종목당 약 140초(초당 1회 제한). 50종목이면 약 2시간 — Actions 6시간 한도 내.
+#
+# 기존 확보 구간(전 종목)과 겹치면 종목 수가 적은 파일이 완전본을 덮어쓸 수 있으므로
+# until을 그 앞날로 지정한다. store.py의 5% 크기 가드가 2차 방어를 한다.
+name: backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      top:
+        description: "시총 상위 N종목"
+        default: "50"
+      since:
+        description: "시작일 YYYY-MM-DD (키움 제공 한계: 약 1년 전)"
+        required: true
+      until:
+        description: "종료일 YYYY-MM-DD (기존 확보 구간 앞날로)"
+        required: true
+
+permissions:
+  contents: write # Release 자산 업로드
+
+concurrency:
+  group: kiwoom # collect와 같은 앱키를 쓰므로 동시 실행 금지 (초당 1회 제한)
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    defaults:
+      run:
+        working-directory: collector
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
+      - run: uv sync
+      - name: 과거 분봉 백필
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
+        run: |
+          uv run python backfill.py \
+            --top "${{ inputs.top }}" \
+            --since "${{ inputs.since }}" \
+            --until "${{ inputs.until }}" \
+            --upload

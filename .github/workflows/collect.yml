@@ -19,7 +19,7 @@ permissions:
   contents: write # Release 자산 업로드
 
 concurrency:
-  group: collect
+  group: kiwoom # backfill과 같은 앱키를 쓰므로 동시 실행 금지 (초당 1회 제한)
   cancel-in-progress: false
 
 jobs:
