@@ -1,0 +1,61 @@
+# 체결된 라이브 주문을 키움 모의계좌로 미러링.
+# 토큰 발급→주문을 같은 런에서 끝낸다(키움 토큰은 IP에 묶여 서버리스로 넘길 수 없다).
+# 스케줄 없음 — 실제 전송이 사람 확인을 거치도록 workflow_dispatch만 둔다.
+name: mirror
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "드라이런(전송 없이 페이로드만 출력)"
+        type: boolean
+        default: true
+      account_id:
+        description: "미러링할 계좌 owner_id (필수 — 미지정이면 모든 계좌가 한 키움 계좌로 합쳐 나간다)"
+        required: true
+      since:
+        description: "이 날짜 이후 주문만 YYYY-MM-DD (기본: 오늘 KST)"
+        required: false
+
+concurrency:
+  group: kiwoom # collect/backfill과 같은 앱키 — 초당 1회 제한 때문에 동시 실행 금지
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: collector
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
+      - run: uv sync
+      - name: 주문 미러링
+        env:
+          TURSO_TRADING_URL: ${{ secrets.TURSO_TRADING_URL }}
+          TURSO_TRADING_AUTH_TOKEN: ${{ secrets.TURSO_TRADING_AUTH_TOKEN }}
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
+          # 입력을 run 스크립트에 직접 보간하면 셸 인젝션이다(시크릿 유출 가능).
+          # env로 받아 인용해서만 쓴다. 값 검증은 파이썬 쪽에서도 한 번 더 한다.
+          DRY_RUN: ${{ inputs.dry_run }}
+          ACCOUNT_ID: ${{ inputs.account_id }}
+          SINCE: ${{ inputs.since }}
+        run: |
+          set -euo pipefail
+          case "$ACCOUNT_ID" in ''|*[!0-9]*) echo "account_id는 숫자여야 한다"; exit 2;; esac
+          args=(--account-id "$ACCOUNT_ID")
+          # 극성 주의: 명시적으로 "false"일 때만 실전송. 값이 비거나(트리거 추가로
+          # inputs가 사라지는 경우) 오타면 드라이런으로 떨어져야 한다 — 돈이 나가는
+          # 스위치의 기본값은 "안 보냄"이어야 한다.
+          if [ "$DRY_RUN" = "false" ]; then args+=(--send); fi
+          if [ -n "$SINCE" ]; then
+            case "$SINCE" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) args+=(--since "$SINCE");;
+              *) echo "since는 YYYY-MM-DD여야 한다"; exit 2;;
+            esac
+          fi
+          echo "실행: kiwoom_order.py ${args[*]}"
+          uv run python kiwoom_order.py "${args[@]}"
