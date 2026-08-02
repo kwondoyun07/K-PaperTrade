@@ -1,6 +1,6 @@
 // 분봉 서빙 — 서버 전용.
 // 소스 우선순위: 로컬 parquet(개발) → GitHub Release parquet(배포) → Turso 롤링 캐시.
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parquetReadObjects } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
@@ -13,7 +13,9 @@ const RELEASE_REPO = process.env.GITHUB_REPO; // 예: "user/K-PaperTrade" — Re
 const RELEASE_TOKEN = process.env.GITHUB_RELEASE_TOKEN;
 
 // 일자별 전 종목 분봉 캐시: date → (ticker → bars). 최근 3개 일자만 유지.
-// ponytail: 일자당 전 종목 인메모리(~70만 행) — 1인용 v1 허용, 병목 시 사전 분할·duckdb로 교체
+// 실측(2026-08-02, 2,645종목 62만 행/일): 3일자 상주 291MB — Vercel 1GB 안.
+// 2일로 줄이면 prevDayClose가 이전 일자를 로드할 때 현재 일자가 밀려나 스래싱한다.
+// ponytail: 일자당 전 종목 인메모리 — 1인용 v1 허용, 동시 사용자가 늘면 duckdb/사전 분할로 교체
 const cache = new Map<string, Map<string, Bar[]>>();
 
 async function readLocal(date: string): Promise<ArrayBuffer | null> {
@@ -25,19 +27,32 @@ async function readLocal(date: string): Promise<ArrayBuffer | null> {
   }
 }
 
-/** 비공개 저장소: 자산 id를 조회한 뒤 octet-stream으로 내려받는다(공개 URL은 401). */
+const ghHeaders = (accept: string) => ({
+  Accept: accept,
+  "X-GitHub-Api-Version": "2022-11-28",
+  ...(RELEASE_TOKEN ? { Authorization: `Bearer ${RELEASE_TOKEN}` } : {}),
+});
+
+/** 릴리스 자산 목록 (다운로드 없이 메타데이터만) */
+async function releaseAssets(tag: string): Promise<{ id: number; name: string }[]> {
+  if (!RELEASE_REPO) return [];
+  try {
+    const r = await fetch(`https://api.github.com/repos/${RELEASE_REPO}/releases/tags/${tag}`, {
+      headers: ghHeaders("application/vnd.github+json"),
+    });
+    if (!r.ok) return [];
+    return ((await r.json()) as { assets?: { id: number; name: string }[] }).assets ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** 비공개 저장소: 자산 id를 조회한 뒤 octet-stream으로 내려받는다(공개 URL은 404). */
 async function readReleasePrivate(repo: string, tag: string, name: string): Promise<ArrayBuffer | null> {
-  const auth = { Authorization: `Bearer ${RELEASE_TOKEN}`, "X-GitHub-Api-Version": "2022-11-28" };
-  const rel = await fetch(`https://api.github.com/repos/${repo}/releases/tags/${tag}`, {
-    headers: { ...auth, Accept: "application/vnd.github+json" },
-  });
-  if (!rel.ok) return null;
-  const asset = ((await rel.json()) as { assets?: { id: number; name: string }[] }).assets?.find(
-    (a) => a.name === name,
-  );
+  const asset = (await releaseAssets(tag)).find((a) => a.name === name);
   if (!asset) return null;
   const bin = await fetch(`https://api.github.com/repos/${repo}/releases/assets/${asset.id}`, {
-    headers: { ...auth, Accept: "application/octet-stream" },
+    headers: ghHeaders("application/octet-stream"),
   });
   if (!bin.ok) return null;
   return await bin.arrayBuffer();
@@ -62,7 +77,16 @@ async function loadDate(date: string): Promise<Map<string, Bar[]> | null> {
   if (hit) return hit;
   const buf = (await readLocal(date)) ?? (await readRelease(date));
   if (!buf) return null;
-  const rows = await parquetReadObjects({ file: buf, compressors });
+  // 파일이 "없음"과 "읽을 수 없음"을 똑같이 null로 흘려보내 Turso 캐시 폴백을 타게 한다.
+  // 수집기가 쓰는 중인 parquet는 footer가 없어 파싱이 실패하는데, 여기서 안 잡으면
+  // 분봉·리플레이·주문 라우트가 전부 500이 된다.
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await parquetReadObjects({ file: buf, compressors });
+  } catch (e) {
+    console.error(`parquet 파싱 실패(${date}) — Turso 캐시로 폴백`, e);
+    return null;
+  }
   const byTicker = new Map<string, Bar[]>();
   for (const r of rows) {
     let arr = byTicker.get(String(r.ticker));
@@ -98,6 +122,42 @@ export async function getMinuteBars(ticker: string, date: string): Promise<Bar[]
     close: Number(r.close),
     volume: Number(r.volume),
   }));
+}
+
+const DATE_RE = /^minute-(\d{4}-\d{2}-\d{2})\.parquet$/;
+
+/**
+ * 리플레이 가능한 일자 목록 (최신순).
+ * 파일 "존재"만 보므로 parquet를 열지 않는다 — 일자별로 분봉을 조회해 확인하면
+ * 전 종목 파일(62만 행)을 일자마다 파싱하게 되어 화면 진입이 수십 초 걸린다.
+ */
+export async function listMinuteDates(limit = 6): Promise<string[]> {
+  const dates = new Set<string>();
+  try {
+    for (const f of await readdir(MINUTE_DIR)) {
+      const m = DATE_RE.exec(f);
+      if (m) dates.add(m[1]);
+    }
+  } catch {
+    // 로컬 디렉토리 없음 — Release만 사용
+  }
+  if (RELEASE_REPO) {
+    // 분봉 보관은 롤링이라 이번 달·지난 달 태그면 충분
+    const now = new Date(Date.now() + 9 * 3600_000);
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth();
+    const tags = [
+      new Date(Date.UTC(y, m, 1)),
+      new Date(Date.UTC(y, m - 1, 1)),
+    ].map((d) => `minute-${d.toISOString().slice(0, 7)}`);
+    for (const tag of tags) {
+      for (const a of await releaseAssets(tag)) {
+        const mm = DATE_RE.exec(a.name);
+        if (mm) dates.add(mm[1]);
+      }
+    }
+  }
+  return [...dates].sort().reverse().slice(0, limit);
 }
 
 export function addDays(date: string, n: number): string {
