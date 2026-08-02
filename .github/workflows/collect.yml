@@ -40,6 +40,9 @@ jobs:
           TURSO_KRX_MARKET_AUTH_TOKEN: ${{ secrets.TURSO_KRX_MARKET_AUTH_TOKEN }}
           TURSO_TRADING_URL: ${{ secrets.TURSO_TRADING_URL }}
           TURSO_TRADING_AUTH_TOKEN: ${{ secrets.TURSO_TRADING_AUTH_TOKEN }}
+          # 키움 모의투자 — 미설정이면 네이버로 자동 폴백
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
         # bash -e에서 `[ ... ] && x=y`는 조건이 거짓일 때 스텝을 종료시키므로 if로 쓴다
         run: |
           args=""

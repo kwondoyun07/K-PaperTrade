@@ -1,8 +1,29 @@
-# 데이터 파이프라인 (2단계 확정)
+# 데이터 파이프라인
 
-## 소스 실측 결과 (2026-08-01 라이브 프로브)
+## 소스 실측 결과
 
-### 네이버 분봉 API (v0 주력, 비공식)
+### 키움 REST API (현재 주력, 모의투자) — 2026-08-02 실측
+
+`POST https://mockapi.kiwoom.com/api/dostk/chart`, 헤더 `api-id: ka10080`
+
+- 토큰: `POST /oauth2/token {grant_type, appkey, secretkey}` → `{token, expires_dt}` (약 24시간)
+- 바디: `{stk_cd, tic_scope: "1", upd_stkpc_tp: "1"}`
+- 응답 배열 `stk_min_pole_chart_qry`, **최신순 900건/페이지**
+  (`cntr_tm` YYYYMMDDHHMMSS, `open_pric`/`high_pric`/`low_pric`/`cur_prc`, `trde_qty` 분당 거래량)
+- **가격에 +/- 부호가 붙어 온다** — 전일 대비 방향 표시일 뿐이므로 제거해야 한다
+- 연속조회: 응답 헤더 `cont-yn=Y` + `next-key`를 다음 요청 헤더로.
+  **45페이지(40,500건, 5개월+)까지 확인했고 그 시점에도 `cont-yn=Y`** — 사실상 제한이 안 보인다
+- **호출 제한: API ID당 초당 1회**(초과 시 HTTP 429 / 1700). 1.1초 간격 사용
+- 실전 호스트(`api.kiwoom.com`)에 모의 키를 쓰면 8030으로 거부 — 실거래 오용이 자동 차단된다
+
+**네이버와 대조(2026-07-31, 3종목 1,138봉): OHLC 전부 일치.**
+시가·종가 단일가 봉의 거래량만 미세 차이(스냅샷 시점 차이로 추정).
+
+교체 이유: 네이버는 ~6거래일뿐이라 "하루라도 놓치면 영구 유실"이었는데,
+키움은 과거 백필이 가능해 그 위험이 사라진다. 공식 API이기도 하다.
+실측: 1종목 6/1 이후 43거래일 16,213행 수집에 22초.
+
+### 네이버 분봉 API (폴백, 비공식) — 2026-08-01 실측
 
 `GET https://api.stock.naver.com/chart/domestic/item/{ticker}/minute`
 
@@ -83,8 +104,17 @@
   놓치면 그날 분봉은 6거래일 뒤 영구 유실 — `workflow_dispatch`로 날짜를
   지정해 재실행할 수 있는 것도 그 창 안에서만 의미가 있다.
 
-## 프로바이더 교체 계획
+## 프로바이더 선택
 
-- v0: NaverProvider (현재)
-- v1: KiwoomRestProvider — 서버점검 종료 후. 스텁: collector/providers/kiwoom.py.
-  토큰 IP 제약 때문에 주문·수집 모두 Actions 같은 런에서 처리해야 함.
+`collector/providers/make_provider()`가 결정한다:
+- `KIWOOM_APP_KEY`/`SECRET`이 있으면 **키움**(기본)
+- 없으면 **네이버**로 폴백(경고 로그). 이 경우 과거 백필은 불가
+- `--provider` 인자나 `PROVIDER` env로 강제 지정 가능
+
+```sh
+uv run --env-file ../.env python backfill.py --tickers 005930 --since 2026-06-01
+uv run --env-file ../.env python daily.py --date 2026-07-31
+```
+
+전 종목 일일 수집 소요: 네이버 약 23분(0.5초 간격) / 키움 약 51분(1.1초 간격).
+둘 다 Actions 잡 한도(6시간) 안이다.

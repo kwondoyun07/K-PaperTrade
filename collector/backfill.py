@@ -25,15 +25,20 @@ def collect_minutes(
     tickers: list[str],
     out_dir: str | Path,
     date: str | None = None,
+    since: str | None = None,
 ) -> tuple[list[Path], list[str]]:
-    """티커들의 분봉을 수집해 일자별 parquet로 저장. (파일 목록, 실패 티커) 반환."""
+    """티커들의 분봉을 수집해 일자별 parquet로 저장. (파일 목록, 실패 티커) 반환.
+
+    since는 키움 프로바이더에서만 의미가 있다(네이버는 ~6거래일만 제공).
+    """
     store = MinuteParquetStore(out_dir)
     failed: list[str] = []
     ordered = sorted(tickers)
     streak = 0
     for i, t in enumerate(ordered, 1):
         try:
-            store.add(provider.get_minute_bars(t, date))
+            kwargs = {"since": since} if since else {}
+            store.add(provider.get_minute_bars(t, date, **kwargs))
             streak = 0
         except Exception as e:
             failed.append(t)
@@ -65,17 +70,21 @@ def main() -> int:
     p = argparse.ArgumentParser(description="KRX 전 종목 분봉 백필")
     p.add_argument("--tickers", help="쉼표 구분 티커 (기본: KRX 전 종목)")
     p.add_argument("--date", help="YYYY-MM-DD — 지정 시 해당 거래일만")
+    p.add_argument("--since", help="YYYY-MM-DD — 그 날짜 이후 전부 (키움만 가능)")
+    p.add_argument("--provider", choices=["kiwoom", "naver"], help="기본: 키움(키 있으면)")
     p.add_argument("--out", default="data/minute")
     p.add_argument("--upload", action="store_true", help="GitHub Release 업로드")
     a = p.parse_args()
 
-    from providers.naver import NaverProvider
+    from providers import make_provider
 
     if a.tickers:
         tickers = [t.strip() for t in a.tickers.split(",") if t.strip()]
     else:
         tickers = [s["ticker"] for s in krx_stocks()]
-    files, failed = collect_minutes(NaverProvider(), tickers, a.out, a.date)
+    provider = make_provider(a.provider)
+    log.info("프로바이더: %s", type(provider).__name__)
+    files, failed = collect_minutes(provider, tickers, a.out, a.date, a.since)
     # 실패율 10% 초과면 차단 등 비정상 신호 — 불완전 parquet 업로드 전에 중단
     if failed and len(failed) > len(tickers) * 0.1:
         log.error("실패율 10%% 초과 (%d/%d) — 업로드 없이 중단", len(failed), len(tickers))
