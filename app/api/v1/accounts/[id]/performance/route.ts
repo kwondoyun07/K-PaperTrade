@@ -2,9 +2,12 @@
 import { NextResponse } from "next/server";
 import { marketDb, tradingDb } from "@/lib/db";
 import { dailyReturns, maxDrawdownPct, sharpeRatio } from "@/lib/metrics";
+import { caller, guardOwner } from "@/lib/owner";
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  const denied = await guardOwner(await caller(req), "accounts", Number(id));
+  if (denied) return denied;
   const snaps = await tradingDb().execute({
     sql: "SELECT ts, equity, cash FROM portfolio_snapshots WHERE owner_type = 'ACCOUNT' AND owner_id = ? ORDER BY ts",
     args: [Number(id)],

@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
+    "migrate": "node scripts/migrate.mjs",
     "e2e": "playwright test"
   },
   "dependencies": {

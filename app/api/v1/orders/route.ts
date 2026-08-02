@@ -3,6 +3,7 @@ import { z } from "zod";
 import { tradingDb } from "@/lib/db";
 import { placeOrder } from "@/lib/trading";
 import { jerr, nowKst, qs } from "@/lib/api";
+import { caller, guardOwner } from "@/lib/owner";
 
 const CreateOrder = z.object({
   accountId: z.number().int().positive(),
@@ -17,6 +18,8 @@ export async function POST(req: Request) {
   const body = CreateOrder.safeParse(await req.json().catch(() => null));
   if (!body.success) return jerr(body.error.issues[0].message);
   const { accountId, ticker, ...rest } = body.data;
+  const denied = await guardOwner(await caller(req), "accounts", accountId);
+  if (denied) return denied;
   try {
     const order = await placeOrder({ type: "ACCOUNT", id: accountId }, ticker, rest, nowKst());
     return NextResponse.json(order, { status: 201 });
@@ -28,6 +31,8 @@ export async function POST(req: Request) {
 export async function GET(req: Request) {
   const accountId = Number(qs(req).get("account_id"));
   if (!accountId) return jerr("account_id 파라미터 필요");
+  const denied = await guardOwner(await caller(req), "accounts", accountId);
+  if (denied) return denied;
   const rs = await tradingDb().execute({
     sql:
       "SELECT o.id, o.ticker, o.side, o.order_type, o.qty, o.limit_price, o.status, o.reject_reason, o.ordered_at, " +
