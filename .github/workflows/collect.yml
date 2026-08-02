@@ -10,6 +10,10 @@ on:
       date:
         description: "수집 일자 YYYY-MM-DD (기본: 오늘 KST)"
         required: false
+      skip_minute:
+        description: "분봉 수집 건너뛰고 Turso 적재만 (복구·검증용)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write # Release 자산 업로드
@@ -36,9 +40,10 @@ jobs:
           TURSO_KRX_MARKET_AUTH_TOKEN: ${{ secrets.TURSO_KRX_MARKET_AUTH_TOKEN }}
           TURSO_TRADING_URL: ${{ secrets.TURSO_TRADING_URL }}
           TURSO_TRADING_AUTH_TOKEN: ${{ secrets.TURSO_TRADING_AUTH_TOKEN }}
+        # bash -e에서 `[ ... ] && x=y`는 조건이 거짓일 때 스텝을 종료시키므로 if로 쓴다
         run: |
-          if [ -n "${{ inputs.date }}" ]; then
-            uv run python daily.py --date "${{ inputs.date }}"
-          else
-            uv run python daily.py
-          fi
+          args=""
+          if [ -n "${{ inputs.date }}" ]; then args="$args --date ${{ inputs.date }}"; fi
+          if [ "${{ inputs.skip_minute }}" = "true" ]; then args="$args --skip-minute"; fi
+          echo "실행: daily.py $args"
+          uv run python daily.py $args
