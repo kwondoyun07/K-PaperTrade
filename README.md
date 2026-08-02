@@ -86,11 +86,25 @@ uv run python test_parse.py
   개인 연구용 저빈도 호출(초당 1회 이하, 지수 백오프 재시도)만 수행합니다.
 - 키움증권 REST API 서버점검 종료 후 `KiwoomRestProvider`로 교체 예정입니다.
 
+## 배포 (Vercel)
+
+1. Vercel에서 이 저장소를 임포트 (Framework: Next.js, 기본 설정 그대로)
+2. 환경변수 등록 — 전부 **서버 전용**, `NEXT_PUBLIC_` 금지:
+   - `TURSO_KRX_MARKET_URL`, `TURSO_KRX_MARKET_AUTH_TOKEN`
+   - `TURSO_TRADING_URL`, `TURSO_TRADING_AUTH_TOKEN`
+   - `APP_PASSWORD` — 공개 URL에 붙는 순간 필수 (미설정 = 인증 없음)
+   - `GITHUB_REPO=kwondoyun07/K-PaperTrade`
+   - `GITHUB_RELEASE_TOKEN` — 비공개 저장소이므로 필수
+     (fine-grained PAT, 이 저장소 Contents: Read-only)
+
+저장소를 공개로 바꾸면 `GITHUB_RELEASE_TOKEN` 없이도 분봉을 읽는다:
+`gh repo edit --visibility public` (되돌릴 수 없으니 신중히).
+
 ## 브랜치 전략
 
 - `main`(master 역할) · `develop` — 상시 브랜치
 - 기능 개발: `develop`에서 `feature/*` 분기 → 완료 시 `develop`에 머지
-- 릴리스: `develop` → `main` PR로만 반영 (GitHub 원격 연결 후)
+- 릴리스: `develop` → `main` PR로 반영
 
 ## 진행 상황
 

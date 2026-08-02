@@ -93,8 +93,15 @@ def _existing_asset_size(base: list[str], tag: str, name: str) -> int | None:
         text=True,
     )
     out = (r.stdout or "").strip()
-    if r.returncode != 0 or not out:
-        return None
+    # fail-closed: 조회 자체가 실패(5xx·rate limit·네트워크)하면 "자산 없음"과 구분해야 한다.
+    # None을 돌려주면 호출측이 크기 가드를 건너뛰고 --clobber로 완전본을 덮어쓴다.
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"release view {tag} 실패 — 기존 자산 크기 확인 불가, "
+            f"완전본 보호를 위해 업로드 중단: {(r.stderr or '').strip()}"
+        )
+    if not out:
+        return None  # 릴리스는 있으나 해당 자산 없음 = 첫 업로드
     try:
         return int(out.splitlines()[0])
     except ValueError:

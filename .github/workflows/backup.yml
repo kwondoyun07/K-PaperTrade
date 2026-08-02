@@ -1,5 +1,10 @@
-# 주 1회 Turso 덤프를 저장소에 커밋 — 벤더 리스크 대비 (핸드오프 §10).
+# 주 1회 Turso 덤프 백업 — 벤더 리스크 대비 (핸드오프 §10).
 # 일요일 05:00 KST = 토요일 20:00 UTC. 시크릿: TURSO_API_TOKEN (플랫폼 API 토큰).
+#
+# 스펙은 "저장소에 커밋"이었으나 GitHub Release 자산으로 변경했다:
+# gz는 델타 압축이 안 돼 매주 전체 blob이 히스토리에 영구 누적되고(삭제해도 안 사라짐),
+# main 푸시가 Vercel 프로덕션 재배포를 매주 트리거하기 때문. Release 자산은
+# 클론 용량에 영향이 없고 날짜별로 보관되어 시점 복구도 그대로 가능하다.
 name: backup
 
 on:
@@ -8,28 +13,36 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write # Release 자산 업로드
 
 jobs:
   dump:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: turso CLI 설치
         run: curl -sSfL https://get.tur.so/install.sh | bash
       - name: 덤프 생성
         env:
           TURSO_API_TOKEN: ${{ secrets.TURSO_API_TOKEN }}
+        # pipefail 필수 — 없으면 turso가 실패해도 gzip이 성공해 빈 백업이 남는다
         run: |
+          set -eo pipefail
           mkdir -p backups
-          ~/.turso/turso db shell krx-market .dump | gzip > backups/krx_market.sql.gz
-          ~/.turso/turso db shell trading .dump | gzip > backups/trading.sql.gz
-          ls -la backups
-      - name: 커밋
+          stamp=$(date -u +%F)
+          for db in krx-market trading; do
+            out="backups/${db//-/_}-${stamp}.sql.gz"
+            ~/.turso/turso db shell "$db" .dump | gzip > "$out"
+            size=$(stat -c%s "$out")
+            # 스키마만 있어도 수백 바이트는 나온다 — 그보다 작으면 덤프 실패로 간주
+            [ "$size" -ge 200 ] || { echo "::error::$db 덤프가 너무 작음 ($size B)"; exit 1; }
+            echo "$out: $size B"
+          done
+      - name: Release 업로드 (날짜별 보관)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add backups
-          git diff --cached --quiet || git commit -m "backup: 주간 Turso 덤프 $(date -u +%F)"
-          git push
+          set -eo pipefail
+          gh release create backup -t backup -n "주간 Turso 덤프 (날짜별 자산)" || true
+          gh release upload backup backups/*.sql.gz --clobber
