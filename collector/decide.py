@@ -27,7 +27,6 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime
-from pathlib import Path
 from statistics import mean
 from zoneinfo import ZoneInfo
 
@@ -129,25 +128,54 @@ def daily_features(mdb: Turso, tickers: list[str], date: str) -> dict[str, dict]
     return out
 
 
-def intraday_features(parquet: Path, tickers: set[str]) -> dict[str, dict]:
-    """당일 분봉 parquet이 로컬에 있으면 장중 모양(시가 대비 위치·후반 거래량)을 덧붙인다.
+def intraday_features(tickers: list[str], date: str) -> dict[str, dict]:
+    """당일 1분봉에서 장중 지표를 뽑는다 — 이 프로젝트의 판단 근거는 분봉이다.
 
-    Actions에서는 collect 잡이 별도 러너라 파일이 없다 — 없으면 조용히 건너뛴다.
+    이전에는 로컬 parquet에 의존했는데 Actions에는 그 파일이 없어(collect는 별도 잡)
+    장중 지표가 통째로 빠진 채 일봉만으로 판단하고 있었다. 프로바이더에서 직접 받는다.
+
+    부수효과가 없다는 점도 중요하다: 앱의 /quotes는 서버가 캐시를 쓰고 PENDING 주문을
+    정산하는 쓰기 경로라, 판단 단계에서 부르면 드라이런조차 체결을 일으킨다.
+
+    분봉이 비면 휴장이거나 아직 장이 안 열린 것 — 호출측이 주문을 건너뛴다.
     """
-    if not parquet.exists():
-        return {}
-    import pandas as pd
+    from providers import make_provider
 
-    df = pd.read_parquet(parquet)
-    df = df[df["ticker"].isin(tickers)].sort_values("ts")
-    out = {}
-    for t, g in df.groupby("ticker"):
-        total = int(g["volume"].sum())
-        out[str(t)] = {
-            "day_open": int(g["open"].iloc[0]),
-            "day_high": int(g["high"].max()),
-            "day_low": int(g["low"].min()),
-            "late30_vol_pct": round(int(g["volume"].tail(30).sum()) / total * 100, 1) if total else 0.0,
+    try:
+        provider = make_provider()
+    except Exception as e:  # 키 미설정 등 — 일봉만으로 진행
+        log.warning("분봉 프로바이더 사용 불가(%s) — 장중 지표 없이 진행", e)
+        return {}
+
+    out: dict[str, dict] = {}
+    for t in tickers:
+        try:
+            bars = provider.get_minute_bars(t, date)
+        except Exception as e:
+            log.warning("%s 분봉 조회 실패: %s", t, e)
+            continue
+        if not bars:
+            continue
+        opens = bars[0].open
+        last = bars[-1].close
+        high = max(b.high for b in bars)
+        low = min(b.low for b in bars)
+        vol = sum(b.volume for b in bars)
+        amt = sum(b.close * b.volume for b in bars)
+        vwap = amt / vol if vol else last
+        recent = bars[-30:]
+        out[t] = {
+            "last": last,
+            "day_open": opens,
+            "day_high": high,
+            "day_low": low,
+            "from_open_pct": round((last / opens - 1) * 100, 2) if opens else 0.0,
+            # 당일 고저 폭에서 현재가 위치(0=저가, 100=고가) — 눌림인지 고점인지
+            "range_pos": round((last - low) / (high - low) * 100) if high > low else 50,
+            "vwap_gap": round((last / vwap - 1) * 100, 2) if vwap else 0.0,
+            "mom30": round((last / recent[0].open - 1) * 100, 2) if recent[0].open else 0.0,
+            "late30_vol_pct": round(sum(b.volume for b in recent) / vol * 100, 1) if vol else 0.0,
+            "bars": len(bars),
         }
     return out
 
@@ -166,8 +194,9 @@ def format_row(t: str, name: str, f: dict, intra: dict | None) -> str:
     )
     if intra:
         s += (
-            f" | 당일 시가 {intra['day_open']:,} 고가 {intra['day_high']:,} 저가 {intra['day_low']:,}"
-            f" 후반30분거래량 {intra['late30_vol_pct']}%"
+            f" || 장중({intra['bars']}봉) 현재 {intra['last']:,} 시가대비 {intra['from_open_pct']:+.2f}%"
+            f" 고저위치 {intra['range_pos']}% VWAP이격 {intra['vwap_gap']:+.2f}%"
+            f" 최근30분 {intra['mom30']:+.2f}% 거래량비중 {intra['late30_vol_pct']}%"
         )
     return s
 
@@ -384,7 +413,6 @@ def main() -> int:
     p.add_argument("--date", help="지표 기준일 YYYY-MM-DD (기본: 오늘 KST). 오늘이 아니면 주문은 생략")
     p.add_argument("--top", type=int, default=_int_env("AI_TOP_N", 10), help="시총 상위 N종목")
     p.add_argument("--account", type=int, default=_int_env("AI_ACCOUNT_ID", 0))
-    p.add_argument("--out", default="data/minute", help="분봉 parquet 디렉터리(있으면 장중 지표 추가)")
     p.add_argument("--dry-run", action="store_true", help="기록·주문 API를 호출하지 않고 계획만 출력")
     a = p.parse_args()
 
@@ -415,7 +443,7 @@ def main() -> int:
         return 0
 
     feats = daily_features(mdb, todo, date)
-    intra = intraday_features(Path(a.out) / f"minute-{date}.parquet", set(todo))
+    intra = intraday_features(todo, date)
     missing = [t for t in todo if t not in feats]
     if missing:
         log.warning("일봉 없음으로 제외: %s", ",".join(missing))
@@ -458,21 +486,16 @@ def main() -> int:
         o for o in api_get(f"/orders?account_id={account}").get("orders", [])
         if str(o.get("ordered_at", ""))[:10] == today
     ]
-    # 휴장일(주중 공휴일)에는 분봉이 없어 접수해도 영구 PENDING이 된다. /quotes가
-    # 실거래 프로브 겸 체결가 소스다 — price가 없는 종목은 주문하지 않는다.
-    tickers = [d["ticker"] for d in recorded if d["action"] != "HOLD"][:10]  # /quotes 상한
-    quotes = {}
-    if tickers and not a.dry_run:
-        # /quotes는 읽기가 아니다 — 서버가 분봉 캐시를 쓰고 PENDING 주문을 정산한다.
-        # 드라이런에서 부르면 "계획만 출력"이라는 약속을 어기고 실제 체결을 일으킨다.
-        quotes = {
-            str(q["ticker"]): q.get("price")
-            for q in api_get("/quotes?tickers=" + ",".join(tickers)).get("quotes", [])
-        }
-    elif tickers:
-        quotes = {t: feats[t].get("close") for t in tickers if t in feats}
-        log.info("[dry-run] /quotes 생략 — 일봉 종가로 계획만 산출")
-    live = {t: {**feats[t], "close": p} for t, p in quotes.items() if p and t in feats}
+    # 주문 가격은 위에서 받은 당일 분봉의 최신 종가를 쓴다. 분봉이 없다는 건
+    # 휴장이거나 아직 장이 안 열렸다는 뜻이라 그 종목은 주문 대상에서 빠진다
+    # (접수해도 체결될 봉이 없어 영구 PENDING이 되기 때문).
+    # /quotes를 쓰지 않는 이유: 그건 읽기가 아니라 서버가 캐시를 쓰고 PENDING 주문을
+    # 정산하는 경로라, 판단 단계에서 부르면 드라이런조차 체결을 일으킨다.
+    live = {
+        t: {**feats[t], "close": intra[t]["last"]}
+        for t in (d["ticker"] for d in recorded if d["action"] != "HOLD")
+        if t in feats and t in intra and intra[t].get("last")
+    }
 
     orders, skips = plan_orders(recorded, live, portfolio, done, today, placed_today=len(orders_today))
     for t, why in skips:
