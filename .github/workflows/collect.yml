@@ -43,10 +43,17 @@ jobs:
           # 키움 모의투자 — 미설정이면 네이버로 자동 폴백
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
+          # 입력을 셸에 직접 보간하면 주입이 된다 — env로 받아 인용·검증한다
+          IN_DATE: ${{ inputs.date }}
+          IN_SKIP_MINUTE: ${{ inputs.skip_minute }}
         # bash -e에서 `[ ... ] && x=y`는 조건이 거짓일 때 스텝을 종료시키므로 if로 쓴다
         run: |
-          args=""
-          if [ -n "${{ inputs.date }}" ]; then args="$args --date ${{ inputs.date }}"; fi
-          if [ "${{ inputs.skip_minute }}" = "true" ]; then args="$args --skip-minute"; fi
-          echo "실행: daily.py $args"
-          uv run python daily.py $args
+          args=()
+          case "$IN_DATE" in
+            "") ;;
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) args+=(--date "$IN_DATE") ;;
+            *) echo "잘못된 date: $IN_DATE" >&2; exit 1 ;;
+          esac
+          if [ "$IN_SKIP_MINUTE" = "true" ]; then args+=(--skip-minute); fi
+          echo "실행: daily.py ${args[*]}"
+          uv run python daily.py "${args[@]}"
