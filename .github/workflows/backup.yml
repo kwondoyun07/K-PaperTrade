@@ -15,17 +15,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: turso CLI 설치
         run: curl -sSfL https://get.tur.so/install.sh | bash
       - name: 덤프 생성
         env:
           TURSO_API_TOKEN: ${{ secrets.TURSO_API_TOKEN }}
+        # pipefail 필수 — 없으면 turso가 실패해도 gzip이 성공해 빈 백업이 조용히 커밋된다
         run: |
+          set -eo pipefail
           mkdir -p backups
-          ~/.turso/turso db shell krx-market .dump | gzip > backups/krx_market.sql.gz
-          ~/.turso/turso db shell trading .dump | gzip > backups/trading.sql.gz
-          ls -la backups
+          for db in krx-market trading; do
+            out="backups/${db//-/_}.sql.gz"
+            ~/.turso/turso db shell "$db" .dump | gzip > "$out"
+            size=$(stat -c%s "$out")
+            # 스키마만 있어도 수백 바이트는 나온다 — 그보다 작으면 덤프 실패로 간주
+            [ "$size" -ge 200 ] || { echo "::error::$db 덤프가 너무 작음 ($size B)"; exit 1; }
+            echo "$out: $size B"
+          done
       - name: 커밋
         run: |
           git config user.name "github-actions[bot]"

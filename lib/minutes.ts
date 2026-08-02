@@ -9,6 +9,8 @@ import { marketDb } from "@/lib/db";
 
 const MINUTE_DIR = process.env.MINUTE_PARQUET_DIR ?? path.join("collector", "data", "minute");
 const RELEASE_REPO = process.env.GITHUB_REPO; // 예: "user/K-PaperTrade" — Release parquet 소스
+// 비공개 저장소면 필수 (contents:read 스코프). 공개 저장소면 없어도 된다.
+const RELEASE_TOKEN = process.env.GITHUB_RELEASE_TOKEN;
 
 // 일자별 전 종목 분봉 캐시: date → (ticker → bars). 최근 3개 일자만 유지.
 // ponytail: 일자당 전 종목 인메모리(~70만 행) — 1인용 v1 허용, 병목 시 사전 분할·duckdb로 교체
@@ -23,12 +25,31 @@ async function readLocal(date: string): Promise<ArrayBuffer | null> {
   }
 }
 
+/** 비공개 저장소: 자산 id를 조회한 뒤 octet-stream으로 내려받는다(공개 URL은 401). */
+async function readReleasePrivate(repo: string, tag: string, name: string): Promise<ArrayBuffer | null> {
+  const auth = { Authorization: `Bearer ${RELEASE_TOKEN}`, "X-GitHub-Api-Version": "2022-11-28" };
+  const rel = await fetch(`https://api.github.com/repos/${repo}/releases/tags/${tag}`, {
+    headers: { ...auth, Accept: "application/vnd.github+json" },
+  });
+  if (!rel.ok) return null;
+  const asset = ((await rel.json()) as { assets?: { id: number; name: string }[] }).assets?.find(
+    (a) => a.name === name,
+  );
+  if (!asset) return null;
+  const bin = await fetch(`https://api.github.com/repos/${repo}/releases/assets/${asset.id}`, {
+    headers: { ...auth, Accept: "application/octet-stream" },
+  });
+  if (!bin.ok) return null;
+  return await bin.arrayBuffer();
+}
+
 async function readRelease(date: string): Promise<ArrayBuffer | null> {
   if (!RELEASE_REPO) return null;
   const tag = `minute-${date.slice(0, 7)}`;
-  const url = `https://github.com/${RELEASE_REPO}/releases/download/${tag}/minute-${date}.parquet`;
+  const name = `minute-${date}.parquet`;
   try {
-    const r = await fetch(url);
+    if (RELEASE_TOKEN) return await readReleasePrivate(RELEASE_REPO, tag, name);
+    const r = await fetch(`https://github.com/${RELEASE_REPO}/releases/download/${tag}/${name}`);
     if (!r.ok) return null;
     return await r.arrayBuffer();
   } catch {
