@@ -35,7 +35,7 @@ import pandas as pd
 from pykrx import stock as krx
 
 from backfill import collect_minutes
-from providers.naver import NaverProvider
+from providers import make_provider
 from store import upload_release
 from turso import Turso
 from universe import krx_listing, krx_stocks
@@ -245,6 +245,7 @@ def main() -> int:
     p.add_argument("--date", help="YYYY-MM-DD (기본: 오늘 KST)")
     p.add_argument("--tickers", help="쉼표 구분 티커 — 스모크 테스트용")
     p.add_argument("--out", default="data/minute")
+    p.add_argument("--provider", choices=["kiwoom", "naver"], help="기본: 키움(키 있으면)")
     p.add_argument("--skip-minute", action="store_true")
     p.add_argument("--skip-upload", action="store_true")
     a = p.parse_args()
@@ -256,7 +257,8 @@ def main() -> int:
         log.error("%s: 미래 날짜", date)
         return 1
 
-    provider = NaverProvider()
+    provider = make_provider(a.provider)
+    log.info("프로바이더: %s", type(provider).__name__)
     skip_minute = a.skip_minute
 
     # 휴장·제공범위 판정: 분봉 프로브(005930) + KS11 교차 확인
@@ -267,7 +269,7 @@ def main() -> int:
         if date == today:
             log.error("%s 거래일인데 분봉 없음 — 업스트림 이상, 실패 처리", date)
             return 1
-        log.warning("%s 분봉 없음(네이버 제공범위 ~6거래일 밖) — 분봉 스킵, 나머지 진행", date)
+        log.warning("%s 분봉 없음(프로바이더 제공범위 밖) — 분봉 스킵, 나머지 진행", date)
         skip_minute = True
 
     listing = krx_listing()
