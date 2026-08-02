@@ -15,7 +15,7 @@ from pathlib import Path
 
 from providers.base import DataProvider
 from store import MinuteParquetStore, upload_release
-from universe import krx_stocks
+from universe import krx_stocks, watchlist
 
 log = logging.getLogger(__name__)
 
@@ -26,10 +26,11 @@ def collect_minutes(
     out_dir: str | Path,
     date: str | None = None,
     since: str | None = None,
+    until: str | None = None,
 ) -> tuple[list[Path], list[str]]:
     """티커들의 분봉을 수집해 일자별 parquet로 저장. (파일 목록, 실패 티커) 반환.
 
-    since는 키움 프로바이더에서만 의미가 있다(네이버는 ~6거래일만 제공).
+    since·until은 키움 프로바이더에서만 의미가 있다(네이버는 ~6거래일만 제공).
     """
     store = MinuteParquetStore(out_dir)
     failed: list[str] = []
@@ -37,7 +38,11 @@ def collect_minutes(
     streak = 0
     for i, t in enumerate(ordered, 1):
         try:
-            kwargs = {"since": since} if since else {}
+            kwargs = {}
+            if since:
+                kwargs["since"] = since
+            if until:
+                kwargs["until"] = until
             store.add(provider.get_minute_bars(t, date, **kwargs))
             streak = 0
         except Exception as e:
@@ -71,6 +76,8 @@ def main() -> int:
     p.add_argument("--tickers", help="쉼표 구분 티커 (기본: KRX 전 종목)")
     p.add_argument("--date", help="YYYY-MM-DD — 지정 시 해당 거래일만")
     p.add_argument("--since", help="YYYY-MM-DD — 그 날짜 이후 전부 (키움만 가능)")
+    p.add_argument("--until", help="YYYY-MM-DD — 그 날짜 이하만 (기존 확보 구간과 겹침 방지)")
+    p.add_argument("--top", type=int, help="시총 상위 N종목만 (과거 백필용)")
     p.add_argument("--provider", choices=["kiwoom", "naver"], help="기본: 키움(키 있으면)")
     p.add_argument("--out", default="data/minute")
     p.add_argument("--upload", action="store_true", help="GitHub Release 업로드")
@@ -80,11 +87,14 @@ def main() -> int:
 
     if a.tickers:
         tickers = [t.strip() for t in a.tickers.split(",") if t.strip()]
+    elif a.top:
+        tickers = watchlist(a.top)
+        log.info("시총 상위 %d종목", len(tickers))
     else:
         tickers = [s["ticker"] for s in krx_stocks()]
     provider = make_provider(a.provider)
     log.info("프로바이더: %s", type(provider).__name__)
-    files, failed = collect_minutes(provider, tickers, a.out, a.date, a.since)
+    files, failed = collect_minutes(provider, tickers, a.out, a.date, a.since, a.until)
     # 실패율 10% 초과면 차단 등 비정상 신호 — 불완전 parquet 업로드 전에 중단
     if failed and len(failed) > len(tickers) * 0.1:
         log.error("실패율 10%% 초과 (%d/%d) — 업로드 없이 중단", len(failed), len(tickers))
