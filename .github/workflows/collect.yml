@@ -31,7 +31,7 @@ jobs:
         working-directory: collector
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v9.0.0 # v9 이동 태그 없음 — 정확한 버전 고정 필요
       - run: uv sync
       - name: 일일 수집 실행
         env:
