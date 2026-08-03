@@ -432,15 +432,11 @@ def main() -> int:
     names = {str(r.Code): str(r.Name) for r in listing.itertuples()}
     log.info("유니버스 %d종목: %s", len(universe), ",".join(universe))
 
-    # 멱등성: 오늘 이미 기록된 종목은 판단부터 건너뛴다 — 재실행이 중복 주문을 내지 않는다
-    prev = api_get("/ai-decisions?limit=200").get("decisions", [])
-    done = {(str(d["ticker"]), str(d["ts"])[:10]) for d in prev if d.get("source") == SOURCE}
-    todo = [t for t in universe if (t, date) not in done]
-    if len(todo) < len(universe):
-        log.info("당일 기록 존재로 제외: %s", ",".join(t for t in universe if t not in todo))
-    if not todo:
-        log.info("판단할 종목 없음 — 종료")
-        return 0
+    # 장중 여러 번 실행한다(GitHub 예약은 best-effort라 한 번은 마감 후에 떨어질 수
+    # 있어서). 판단은 매번 다시 한다 — 중복 주문 방지는 '판단했는가'가 아니라
+    # '오늘 이미 주문된 종목인가'로 막는다(아래 order-level done). 그래야 장중
+    # 재실행이 새 신호를 낼 수 있고, 마감 후 지연 실행은 기록만 남기고 넘어간다.
+    todo = list(universe)
 
     feats = daily_features(mdb, todo, date)
     intra = intraday_features(todo, date)
@@ -479,13 +475,16 @@ def main() -> int:
     if block:
         log.warning("주문 경로 스킵 — %s", block)
         if not a.dry_run:
-            log.warning("판단은 기록됐다 — 오늘 재실행은 멱등 컷에 걸려 주문이 나가지 않는다")
+            log.warning("판단은 기록됐다 — 장중에 실행되는 다음 크론이 주문을 낸다")
         return 0
 
     orders_today = [
         o for o in api_get(f"/orders?account_id={account}").get("orders", [])
         if str(o.get("ordered_at", ""))[:10] == today
     ]
+    # 주문 단위 멱등: 오늘 이미 주문(매수·매도)이 있는 종목은 재실행이 다시 주문하지
+    # 않는다. 장중 여러 번 도는 구조에서 중복·과다 주문을 막는 핵심 장치다.
+    done = {(str(o.get("ticker", "")).zfill(6), today) for o in orders_today}
     # 주문 가격은 위에서 받은 당일 분봉의 최신 종가를 쓴다. 분봉이 없다는 건
     # 휴장이거나 아직 장이 안 열렸다는 뜻이라 그 종목은 주문 대상에서 빠진다
     # (접수해도 체결될 봉이 없어 영구 PENDING이 되기 때문).
