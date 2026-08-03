@@ -3,7 +3,7 @@
 // 주문·체결 내역 — 거부 사유 뱃지 포함
 import { useEffect, useState } from "react";
 import { DOWN, UP, won } from "@/lib/format";
-import { j, type OrderRow } from "./client";
+import { fetchStockNames, j, type OrderRow } from "./client";
 
 const th: React.CSSProperties = {
   color: "#8B8D98", fontWeight: 500, fontSize: 12, padding: "6px 0",
@@ -26,12 +26,14 @@ function StatusBadge({ status, reason }: { status: string; reason: string | null
 
 export default function Orders({ accountId, active }: { accountId: number | null; active: boolean }) {
   const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!active || !accountId) return;
     j<{ orders: OrderRow[] }>(`/api/v1/orders?account_id=${accountId}`)
       .then((r) => setOrders(r.orders))
       .catch(() => {});
+    fetchStockNames().then(setNames);
   }, [active, accountId]);
 
   return (
@@ -57,7 +59,10 @@ export default function Orders({ accountId, active }: { accountId: number | null
               {orders.map((o) => (
                 <tr key={o.id}>
                   <td style={{ ...td, textAlign: "left", color: "#8B8D98", fontSize: 12 }}>{o.ordered_at}</td>
-                  <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{o.ticker}</td>
+                  <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>
+                    {names[o.ticker] ?? o.ticker}
+                    <span style={{ color: "#5C5E68", fontSize: 11, fontWeight: 400, marginLeft: 6 }}>{o.ticker}</span>
+                  </td>
                   <td style={{ ...td, textAlign: "center", color: o.side === "BUY" ? UP : DOWN, fontWeight: 700 }}>
                     {o.side === "BUY" ? "매수" : "매도"}
                   </td>
