@@ -170,6 +170,37 @@ def upsert_indices(db: Turso, date: str) -> None:
     log.info("indices upsert: %d행", len(stmts))
 
 
+def settle_accounts() -> None:
+    """마감 후 ACCOUNT 미체결 주문을 정산한다.
+
+    장중 마지막 판단(14:30)이 낸 주문은 그 시점엔 체결할 다음 분봉이 아직 없어
+    PENDING으로 남는다 — 사용자가 화면(/quotes)을 열기 전까진 값이 안 잡힌다.
+    하루 분봉이 다 모인 마감 후 여기서 채운다. 정산은 분봉이 고정돼 있어 언제
+    돌든(collect가 지연돼도) 결과가 같다. 스냅샷보다 먼저 돌려 평가액이 오늘
+    체결을 반영하게 한다. settleOwnerOrders는 멱등이라 중복 호출도 안전하다.
+    """
+    import os
+
+    import httpx
+
+    base = os.environ.get("APP_BASE_URL")
+    secret = os.environ.get("CRON_SECRET")
+    if not base or not secret:
+        log.warning("APP_BASE_URL/CRON_SECRET 미설정 — ACCOUNT 정산 건너뜀")
+        return
+    try:
+        r = httpx.post(
+            base.rstrip("/") + "/api/v1/cron/settle",
+            headers={"x-cron-secret": secret},
+            timeout=60.0,
+        )
+        r.raise_for_status()
+        d = r.json()
+        log.info("ACCOUNT 정산: 체결 %s / 거부 %s", d.get("filled"), d.get("rejected"))
+    except Exception as e:
+        log.warning("ACCOUNT 정산 실패 — 스킵(다음 사이클 재시도): %s", e)
+
+
 def snapshot_accounts(tdb: Turso, close_map: dict[str, int], date: str) -> None:
     """계좌별 평가액(현금+보유×당일 종가)을 portfolio_snapshots에 upsert (ts = date 15:30)."""
     accounts = tdb.query("SELECT id, cash FROM accounts")
@@ -338,6 +369,7 @@ def main() -> int:
         if tdb is None:
             log.warning("TURSO_TRADING_* env 미설정 — 스냅샷·AI 수익률 배치 건너뜀")
         else:
+            settle_accounts()  # 스냅샷 전에 — 오늘 체결이 평가액에 반영되도록
             if rows:
                 snapshot_accounts(tdb, {r[0]: r[5] for r in rows}, date)
             else:
