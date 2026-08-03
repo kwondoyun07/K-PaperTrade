@@ -54,6 +54,8 @@ jobs:
           # 당일 데이터는 양쪽 다 되므로 공식 소스인 키움을 쓴다.
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
+          # DART 전자공시 (무료 키). 없으면 공시 없이 진행.
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           # 킬 스위치: 저장소 변수 하나로 자동 주문만 끈다(판단 기록은 계속된다).
