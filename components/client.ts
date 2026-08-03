@@ -16,6 +16,15 @@ export const post = <T = Record<string, unknown>>(url: string, body: unknown) =>
   });
 
 export type StockRow = { ticker: string; name: string; market: string };
+
+// 코드→이름 맵을 세션당 1회 로드해 공유한다. 이름은 부가정보라 실패해도 코드로 폴백.
+let namesPromise: Promise<Record<string, string>> | null = null;
+export function fetchStockNames(): Promise<Record<string, string>> {
+  namesPromise ??= j<{ names: Record<string, string> }>("/api/v1/stocks/names")
+    .then((r) => r.names)
+    .catch(() => ({}));
+  return namesPromise;
+}
 export type PositionRow = {
   ticker: string;
   qty: number;

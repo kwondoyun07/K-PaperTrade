@@ -3,7 +3,7 @@
 // AI 판단 로그 — 판단 vs 이후 수익률 (ret_d5/d20/d60은 6단계 배치가 채움)
 import { useEffect, useState } from "react";
 import { clr, DOWN, NEUTRAL, pct, UP } from "@/lib/format";
-import { j } from "./client";
+import { fetchStockNames, j } from "./client";
 
 type Decision = {
   id: number; ticker: string; ts: string; action: "BUY" | "SELL" | "HOLD";
@@ -30,12 +30,14 @@ const ret = (v: number | null) =>
 
 export default function AiLog({ active }: { active: boolean }) {
   const [rows, setRows] = useState<Decision[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!active) return;
     j<{ decisions: Decision[] }>("/api/v1/ai-decisions?limit=100")
       .then((r) => setRows(r.decisions))
       .catch(() => {});
+    fetchStockNames().then(setNames);
   }, [active]);
 
   return (
@@ -65,7 +67,10 @@ export default function AiLog({ active }: { active: boolean }) {
                 return (
                   <tr key={d.id}>
                     <td style={{ ...td, textAlign: "left", color: "#8B8D98", fontSize: 12 }}>{d.ts}</td>
-                    <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{d.ticker}</td>
+                    <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>
+                      {names[d.ticker] ?? d.ticker}
+                      <span style={{ color: "#5C5E68", fontSize: 11, fontWeight: 400, marginLeft: 6 }}>{d.ticker}</span>
+                    </td>
                     <td style={{ ...td, textAlign: "center" }}>
                       <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 6, color: a.color, background: a.background }}>
                         {a.label}
