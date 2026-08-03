@@ -46,3 +46,4 @@ jobs:
       - run: uv run python test_parse.py
       - run: uv run python test_decide.py
       - run: uv run python test_kiwoom_order.py
+      - run: uv run python test_reports.py
