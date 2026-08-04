@@ -164,6 +164,23 @@ assert db.updates[0][1][0].startswith("SKIP:"), "위반 행을 마킹하지 않�
 assert db.updates[0][1][1] == 13
 assert [c[1] for c in db.claims] == [12], "위반 행을 선점했다"
 
+# --- PENDING 주문(체결가 없음)은 시장 종가를 기준가로 미러링 ---
+# 키움은 장중에만 주문을 받으므로 방금 낸(아직 미체결) 주문을 그 즉시 보낸다.
+class FakeMarketDb:
+    def query(self, sql, args=()):
+        assert "daily_prices" in sql
+        return [{"close": 70000}]
+
+
+PENDING = [dict(ROWS[0], id=21, fill_price=None)]  # 아직 체결 전
+db, client = FakeDb(rows=PENDING), FakeClient()
+assert ko.mirror(db, client, "2026-08-03", 20, 1, FakeMarketDb()) == 1, "PENDING을 못 보냈다"
+assert client.sent[0][1]["stk_cd"] == "005930"
+# 기준가를 못 구하면(market_db 없음) 금액 상한을 검증할 수 없어 그 건만 SKIP
+db, client = FakeDb(rows=PENDING), FakeClient()
+assert ko.mirror(db, client, "2026-08-03", 20, 1, None) == 0
+assert client.sent == [] and db.updates[0][1][0].startswith("SKIP:"), "기준가 없으면 SKIP해야"
+
 # --- main(): --account-id 필수 + --limit 하한 --------------------------------
 MAIN_DB = FakeDb(rows=[])
 ko.Turso.from_env = staticmethod(lambda db: MAIN_DB)  # type: ignore[method-assign]
