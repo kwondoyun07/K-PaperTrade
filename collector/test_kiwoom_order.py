@@ -220,3 +220,55 @@ assert not any("FAILED" in str(a) for _, a in db.updates), \
     f"인증 실패로 행이 FAILED 마킹됨 — 다음 런에서 영구 배제된다: {db.updates}"
 assert client.token_calls == 1, "토큰을 루프 전에 한 번 받아야 한다"
 print("토큰 선발급 회귀 테스트 OK")
+
+# --- 키움 → 웹 동기화 (키움이 기준) ---
+POS_JSON = {"acnt_evlt_remn_indv_tot": [
+    {"stk_cd": "005930", "rmnd_qty": "000000000003", "pur_pric": "000000240000"},
+    {"stk_cd": "A000660", "rmnd_qty": "2", "pur_pric": "1,718,000"},  # A 접두사·콤마
+    {"stk_cd": "005930", "rmnd_qty": "0", "pur_pric": "0"},           # 수량 0 → 버림
+]}
+pos = ko.parse_positions(POS_JSON)
+assert pos == [
+    {"ticker": "005930", "qty": 3, "avg_price": 240000},
+    {"ticker": "000660", "qty": 2, "avg_price": 1718000},
+], pos
+assert ko.parse_positions({}) == [] and ko.parse_positions({"acnt_evlt_remn_indv_tot": None}) == []
+assert ko._num("000000010000000") == 10000000 and ko._num("-1,234") == 1234 and ko._num("") == 0
+
+
+class SyncClient:
+    def deposit(self):
+        return {"entr": "000000009500000"}  # 예수금 950만
+
+    def balance(self):
+        return POS_JSON
+
+
+class SyncDb:
+    def __init__(self, orders):
+        self.orders = orders
+        self.batch = None
+
+    def query(self, sql, args=()):
+        assert "status = 'PENDING'" in sql
+        return self.orders
+
+    def execute_batch(self, stmts):
+        self.batch = stmts
+
+
+ORDERS = [
+    {"id": 5, "ticker": "005930", "qty": 3, "broker_order_id": "0001234"},   # 키움 접수 → FILLED
+    {"id": 6, "ticker": "999999", "qty": 1, "broker_order_id": "FAILED:x"},  # 미전송 → REJECTED
+    {"id": 7, "ticker": "000660", "qty": 2, "broker_order_id": ""},          # 미전송 → PENDING 유지
+]
+sdb = SyncDb(ORDERS)
+ko.sync_from_kiwoom(sdb, SyncClient(), 1, "2026-08-05")
+sqls = [s[0] for s in sdb.batch]
+assert sdb.batch[0] == ("UPDATE accounts SET cash = ? WHERE id = ?", (9500000, 1)), "예수금 반영"
+assert any("DELETE FROM positions" in s for s in sqls)
+assert sum(1 for s in sqls if "INSERT INTO positions" in s) == 2, "보유 2종목 반영"
+assert any("status = 'FILLED'" in s for s in sqls), "키움 접수분 FILLED"
+assert any("status = 'REJECTED'" in s for s in sqls), "미전송분 REJECTED"
+assert not any("id = ? AND status = 'PENDING'" in s and s[1] == (7,) for s in sdb.batch), "미전송(빈) 주문은 손대지 않음"
+print("키움→웹 동기화 테스트 OK")

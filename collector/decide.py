@@ -554,7 +554,8 @@ def main() -> int:
         log.info("주문 %s %s %d주 (@%s)", o["side"], o["ticker"], o["qty"], f"{live[o['ticker']]['close']:,}")
         api_post("/orders", {"accountId": account, "ticker": o["ticker"], "side": o["side"],
                              "type": o["type"], "qty": o["qty"]}, a.dry_run)
-    api_post("/cron/settle", None, a.dry_run)
+    # ACCOUNT 주문은 웹이 자체 체결하지 않는다 — 이어지는 미러링 스텝이 키움에 보내고
+    # 키움의 실제 체결·잔고를 웹에 반영한다(kiwoom_order.py sync_from_kiwoom). 키움이 기준.
     return 0
 
 

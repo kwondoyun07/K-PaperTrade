@@ -53,6 +53,8 @@ ACNT_PATH = "/api/dostk/acnt"
 TR_BUY = "kt10000"
 TR_SELL = "kt10001"
 TR_ACCOUNTS = "ka00001"
+TR_DEPOSIT = "kt00001"  # 예수금상세현황
+TR_BALANCE = "kt00018"  # 계좌평가잔고내역(보유종목)
 EXCHANGE = "KRX"  # 모의투자는 NXT 미지원
 
 # 미러링 상한 — 버그가 나도 손실 규모가 유한하도록 강제한다.
@@ -162,6 +164,14 @@ class KiwoomOrderClient:
     def accounts(self) -> dict:
         """ka00001 계좌번호조회 — 앱키에 묶인 계좌 목록."""
         return self._post(ACNT_PATH, TR_ACCOUNTS, {})
+
+    def deposit(self) -> dict:
+        """kt00001 예수금상세현황 — entr(예수금)."""
+        return self._post(ACNT_PATH, TR_DEPOSIT, {"qry_tp": "3"})
+
+    def balance(self) -> dict:
+        """kt00018 계좌평가잔고내역 — acnt_evlt_remn_indv_tot(보유종목)."""
+        return self._post(ACNT_PATH, TR_BALANCE, {"qry_tp": "1", "dmst_stex_tp": EXCHANGE})
 
     def place(self, side: str, payload: dict) -> str:
         j = self._post(ORDER_PATH, tr_for(side), payload)
@@ -316,6 +326,76 @@ def mirror(
     return sent
 
 
+# --- 키움 → 웹 동기화 (키움이 기준) ---------------------------------------
+
+
+def _num(v: object) -> int:
+    """키움 숫자 문자열('000000010000000', 부호·콤마 포함) → int."""
+    s = re.sub(r"[^\d]", "", str(v or ""))
+    return int(s) if s else 0
+
+
+def parse_positions(balance_json: dict) -> list[dict]:
+    """kt00018 응답 → [{ticker, qty, avg_price}]. 수량 0·형식 오류는 버린다."""
+    out: list[dict] = []
+    for p in balance_json.get("acnt_evlt_remn_indv_tot") or []:
+        if not isinstance(p, dict):
+            continue
+        t = str(p.get("stk_cd") or "").strip().lstrip("A").zfill(6)
+        qty = _num(p.get("rmnd_qty"))
+        if len(t) == 6 and t.isdigit() and qty > 0:
+            out.append({"ticker": t, "qty": qty, "avg_price": _num(p.get("pur_pric"))})
+    return out
+
+
+def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, today: str) -> None:
+    """키움 모의계좌의 실제 예수금·보유를 웹 계좌에 그대로 반영한다(키움이 기준).
+
+    웹은 ACCOUNT 자체 체결을 더는 하지 않는다 — 여기서 키움 상태를 덮어써 두 계좌
+    값을 맞춘다. 오늘 주문은 키움 수용 여부(broker_order_id)로 상태를 확정한다:
+    실주문번호→FILLED, FAILED/SKIP→REJECTED, 그 외(미전송)→PENDING 유지.
+    """
+    cash = _num(client.deposit().get("entr"))
+    positions = parse_positions(client.balance())
+    avg_by = {p["ticker"]: p["avg_price"] for p in positions}
+
+    stmts: list[tuple] = [
+        ("UPDATE accounts SET cash = ? WHERE id = ?", (cash, account_id)),
+        ("DELETE FROM positions WHERE owner_type = 'ACCOUNT' AND owner_id = ?", (account_id,)),
+    ]
+    for p in positions:
+        stmts.append((
+            "INSERT INTO positions (owner_type, owner_id, ticker, qty, avg_price) VALUES ('ACCOUNT', ?, ?, ?, ?)",
+            (account_id, p["ticker"], p["qty"], p["avg_price"]),
+        ))
+
+    now = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    orders = db.query(
+        "SELECT id, ticker, qty, broker_order_id FROM orders "
+        "WHERE owner_type = 'ACCOUNT' AND owner_id = ? AND status = 'PENDING' AND substr(ordered_at, 1, 10) = ?",
+        (account_id, today),
+    )
+    for o in orders:
+        bid = str(o["broker_order_id"] or "")
+        oid = int(o["id"])
+        if bid and not bid.startswith(("FAILED:", "SKIP:", "SENDING:")):
+            stmts.append(("UPDATE orders SET status = 'FILLED' WHERE id = ? AND status = 'PENDING'", (oid,)))
+            px = avg_by.get(str(o["ticker"]).zfill(6), 0)
+            if px > 0:
+                stmts.append((
+                    "INSERT INTO executions (order_id, price, qty, commission, tax, executed_at) VALUES (?, ?, ?, 0, 0, ?)",
+                    (oid, px, int(o["qty"]), now),
+                ))
+        elif bid.startswith(("FAILED:", "SKIP:")):
+            stmts.append((
+                "UPDATE orders SET status = 'REJECTED', reject_reason = ? WHERE id = ? AND status = 'PENDING'",
+                (f"키움 미전송: {bid[:40]}", oid),
+            ))
+
+    db.execute_batch(stmts)
+    log.info("키움→웹 동기화: 예수금 %s원, 보유 %d종목", f"{cash:,}", len(positions))
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     p = argparse.ArgumentParser(description="키움 모의계좌 주문 미러링")
@@ -356,6 +436,14 @@ def main() -> int:
         log.info("드라이런 — 실제 전송 없음")
     sent = mirror(db, client, since, limit, a.account_id, market_db)
     log.info("미러링 완료: %d건 전송", sent)
+
+    # 전송 후 키움의 실제 예수금·보유를 웹에 반영한다(키움이 기준). 드라이런은 건너뛴다.
+    if client is not None:
+        time.sleep(3)  # 시장가 체결이 키움 잔고에 반영될 시간
+        try:
+            sync_from_kiwoom(db, client, a.account_id, datetime.now(KST).strftime("%Y-%m-%d"))
+        except Exception as e:  # noqa: BLE001 — 동기화 실패가 미러 결과를 무르게 하면 안 된다
+            log.error("키움→웹 동기화 실패(다음 런 재시도): %s", e)
     return 0
 
 
