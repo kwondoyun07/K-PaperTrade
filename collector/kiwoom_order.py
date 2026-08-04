@@ -1,7 +1,13 @@
 """키움 모의계좌 주문 미러링 (v1.5).
 
-자체 체결 엔진에서 FILLED된 라이브 계좌 주문을 키움 **모의투자** 계좌에도 내보내고,
+라이브 계좌(owner_type=ACCOUNT)의 주문을 키움 **모의투자** 계좌에도 내보내고,
 응답 주문번호를 orders.broker_order_id에 기록해 대사할 수 있게 한다.
+
+키움 모의계좌는 장중(09:00~15:30)에만 주문을 받으므로(마감 후 "장종료" 거부),
+AI가 장중에 주문을 낸 직후(decide 워크플로 안)에서 돌린다. 그래서 아직 체결되지
+않은(PENDING) 주문도 대상이다 — 웹은 다음 분봉 시가로 나중에 체결되지만 키움엔
+지금 시장가로 보내 양쪽에 같은 매매가 접수되게 한다. 두 시뮬레이터의 체결가·잔고는
+정확히 같지 않다(엔진·시세·타이밍이 다르다). 목적은 실제 주문 경로의 가짜 돈 검증이다.
 
 Actions 배치에서만 돌린다. 키움 토큰은 IP 화이트리스트에 묶여 있어
 토큰 발급→주문을 반드시 같은 런 안에서 끝내야 한다(웹 서버로 토큰을 넘기지 않는다).
@@ -167,13 +173,17 @@ class KiwoomOrderClient:
 
 # --- 미러링 대상 조회 ------------------------------------------------------
 
+# PENDING·FILLED 둘 다 대상이다. 키움 모의계좌는 장중(09:00~15:30)에만 주문을
+# 받으므로(마감 후엔 "장종료" 거부), AI가 장중에 낸 주문을 그 즉시 보내야 한다.
+# 웹은 다음 분봉 시가로 나중에 체결되지만(그래서 방금 낸 주문은 PENDING), 키움엔
+# 지금(장중) 시장가로 보내 양쪽에 같은 매매가 접수되게 한다. REJECTED/CANCELLED는 제외.
 PENDING_SQL = """
 SELECT o.id, o.ticker, o.side, o.order_type, o.qty, o.limit_price, o.ordered_at,
        (SELECT price FROM executions e WHERE e.order_id = o.id ORDER BY e.id DESC LIMIT 1) AS fill_price
 FROM orders o
 WHERE o.owner_type = 'ACCOUNT'
   AND o.owner_id = ?
-  AND o.status = 'FILLED'
+  AND o.status IN ('PENDING', 'FILLED')
   AND COALESCE(o.broker_order_id, '') = ''
   AND o.ordered_at >= ?
 ORDER BY o.id
@@ -224,17 +234,35 @@ def valid_since(s: str, today: datetime | None = None) -> str:
     return s
 
 
+def latest_closes(market_db: Turso | None, tickers: list[str]) -> dict[str, int]:
+    """금액 상한 검증용 기준가. 아직 체결 안 된(PENDING) 주문은 체결가가 없으므로
+    시장 DB 최신 종가를 쓴다. 없으면 order_payload가 '기준가 없음'으로 그 건만 SKIP한다."""
+    out: dict[str, int] = {}
+    if market_db is None:
+        return out
+    for t in set(tickers):
+        rows = market_db.query(
+            "SELECT close FROM daily_prices WHERE ticker = ? ORDER BY date DESC LIMIT 1", (t,)
+        )
+        if rows:
+            out[t] = int(rows[0]["close"])
+    return out
+
+
 def mirror(
     db: Turso,
     client: KiwoomOrderClient | None,
     since: str,
     limit: int,
     account_id: int,
+    market_db: Turso | None = None,
 ) -> int:
     rows = db.query(PENDING_SQL, (account_id, since, limit))
     if not rows:
         log.info("미러링 대상 없음 (account=%s, ordered_at >= %s)", account_id, since)
         return 0
+
+    refs = latest_closes(market_db, [str(r["ticker"]) for r in rows if not r["fill_price"]])
 
     # 토큰을 루프 전에 미리 받는다. 지연 발급이면 인증·연결 장애가 건별 예외로 잡혀
     # 대상 행이 전부 'FAILED'로 마킹되고, 그 행들은 다시는 조회되지 않는다.
@@ -253,7 +281,7 @@ def mirror(
                 qty=int(r["qty"]),
                 order_type=str(r["order_type"]),
                 limit_price=r["limit_price"],
-                ref_price=int(r["fill_price"] or 0),
+                ref_price=int(r["fill_price"] or refs.get(str(r["ticker"])) or 0),
             )
         except LimitError as e:
             # 한 건의 상한 위반이 뒤 주문을 전부 막으면 안 된다. 마킹하고 넘어간다.
@@ -321,11 +349,12 @@ def main() -> int:
         log.error("TURSO_TRADING_* env 미설정")
         return 1
     ensure_broker_column(db)
+    market_db = Turso.from_env("KRX_MARKET")  # PENDING 주문 기준가(종가)용 — 없으면 그 건만 SKIP
 
     client = None if a.dry_run else KiwoomOrderClient()
     if client is None:
         log.info("드라이런 — 실제 전송 없음")
-    sent = mirror(db, client, since, limit, a.account_id)
+    sent = mirror(db, client, since, limit, a.account_id, market_db)
     log.info("미러링 완료: %d건 전송", sent)
     return 0
 
