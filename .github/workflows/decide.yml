@@ -88,3 +88,20 @@ jobs:
           if [ "$IN_DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           echo "실행: decide.py ${args[*]}"
           uv run python decide.py "${args[@]}"
+
+      # 방금 낸 주문을 키움 모의계좌로 즉시 미러링한다. 키움은 장중(09:00~15:30)에만
+      # 주문을 받으므로 마감 후 collect가 아니라 여기(장중, AI 주문 직후)서 보낸다.
+      # 자동주문이 켜졌고 드라이런이 아닐 때만. 낸 주문이 없으면 "대상 없음"으로 넘어간다.
+      - name: 키움 모의계좌 미러링
+        if: ${{ vars.AI_AUTOTRADE == '1' && !inputs.dry_run }}
+        env:
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
+          TURSO_TRADING_URL: ${{ secrets.TURSO_TRADING_URL }}
+          TURSO_TRADING_AUTH_TOKEN: ${{ secrets.TURSO_TRADING_AUTH_TOKEN }}
+          TURSO_KRX_MARKET_URL: ${{ secrets.TURSO_KRX_MARKET_URL }}
+          TURSO_KRX_MARKET_AUTH_TOKEN: ${{ secrets.TURSO_KRX_MARKET_AUTH_TOKEN }}
+          AI_ACCOUNT_ID: ${{ vars.AI_ACCOUNT_ID }}
+        run: |
+          if [ -z "$AI_ACCOUNT_ID" ]; then echo "AI_ACCOUNT_ID 미설정 — 미러링 건너뜀"; exit 0; fi
+          uv run python kiwoom_order.py --account-id "$AI_ACCOUNT_ID" --send
