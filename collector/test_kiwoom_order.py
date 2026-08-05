@@ -238,7 +238,8 @@ assert ko._num("000000010000000") == 10000000 and ko._num("-1,234") == 1234 and 
 
 class SyncClient:
     def deposit(self):
-        return {"entr": "000000009500000"}  # 예수금 950만
+        # entr(예수금)는 매수 반영 안 됨 → d2_entra(D+2)를 써야 한다
+        return {"entr": "000000010000000", "d2_entra": "000000009500000"}
 
     def balance(self):
         return POS_JSON

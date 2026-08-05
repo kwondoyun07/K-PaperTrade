@@ -355,7 +355,10 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
     값을 맞춘다. 오늘 주문은 키움 수용 여부(broker_order_id)로 상태를 확정한다:
     실주문번호→FILLED, FAILED/SKIP→REJECTED, 그 외(미전송)→PENDING 유지.
     """
-    cash = _num(client.deposit().get("entr"))
+    # entr(예수금)는 T+2 결제 전이라 매수해도 안 줄어든다(현금 부풀림). d2_entra(D+2
+    # 예수금)가 매수·매도가 반영된 실제 현금이다. 없으면 entr로 폴백.
+    dep = client.deposit()
+    cash = _num(dep.get("d2_entra") or dep.get("entr"))
     positions = parse_positions(client.balance())
     avg_by = {p["ticker"]: p["avg_price"] for p in positions}
 
