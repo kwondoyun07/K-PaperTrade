@@ -330,13 +330,21 @@ def mirror(
 
 
 def _num(v: object) -> int:
-    """키움 숫자 문자열('000000010000000', 부호·콤마 포함) → int."""
+    """키움 숫자 문자열('000000010000000', 콤마 포함) → 부호 없는 int."""
     s = re.sub(r"[^\d]", "", str(v or ""))
     return int(s) if s else 0
 
 
+def _snum(v: object) -> int:
+    """부호 있는 키움 숫자('-00000000019702' = 손실) → int. 평가손익 등에 쓴다."""
+    s = str(v or "").strip()
+    n = _num(s)
+    return -n if s.startswith("-") else n
+
+
 def parse_positions(balance_json: dict) -> list[dict]:
-    """kt00018 응답 → [{ticker, qty, avg_price}]. 수량 0·형식 오류는 버린다."""
+    """kt00018 응답 → [{ticker, qty, avg_price, pnl}]. pnl은 키움 평가손익(제비용 반영,
+    부호 있음). 수량 0·형식 오류는 버린다."""
     out: list[dict] = []
     for p in balance_json.get("acnt_evlt_remn_indv_tot") or []:
         if not isinstance(p, dict):
@@ -344,7 +352,12 @@ def parse_positions(balance_json: dict) -> list[dict]:
         t = str(p.get("stk_cd") or "").strip().lstrip("A").zfill(6)
         qty = _num(p.get("rmnd_qty"))
         if len(t) == 6 and t.isdigit() and qty > 0:
-            out.append({"ticker": t, "qty": qty, "avg_price": _num(p.get("pur_pric"))})
+            out.append({
+                "ticker": t,
+                "qty": qty,
+                "avg_price": _num(p.get("pur_pric")),
+                "pnl": _snum(p.get("evltv_prft")),
+            })
     return out
 
 
@@ -358,18 +371,20 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
     # entr(예수금)는 T+2 결제 전이라 매수해도 안 줄어든다(현금 부풀림). d2_entra(D+2
     # 예수금)가 매수·매도가 반영된 실제 현금이다. 없으면 entr로 폴백.
     dep = client.deposit()
+    bal = client.balance()
     cash = _num(dep.get("d2_entra") or dep.get("entr"))
-    positions = parse_positions(client.balance())
+    est_asset = _num(bal.get("prsm_dpst_aset_amt")) or None  # 추정예탁자산(총자산, 제비용 반영)
+    positions = parse_positions(bal)
     avg_by = {p["ticker"]: p["avg_price"] for p in positions}
 
     stmts: list[tuple] = [
-        ("UPDATE accounts SET cash = ? WHERE id = ?", (cash, account_id)),
+        ("UPDATE accounts SET cash = ?, est_asset = ? WHERE id = ?", (cash, est_asset, account_id)),
         ("DELETE FROM positions WHERE owner_type = 'ACCOUNT' AND owner_id = ?", (account_id,)),
     ]
     for p in positions:
         stmts.append((
-            "INSERT INTO positions (owner_type, owner_id, ticker, qty, avg_price) VALUES ('ACCOUNT', ?, ?, ?, ?)",
-            (account_id, p["ticker"], p["qty"], p["avg_price"]),
+            "INSERT INTO positions (owner_type, owner_id, ticker, qty, avg_price, pnl) VALUES ('ACCOUNT', ?, ?, ?, ?, ?)",
+            (account_id, p["ticker"], p["qty"], p["avg_price"], p["pnl"]),
         ))
 
     now = datetime.now(KST).strftime("%Y-%m-%d %H:%M")

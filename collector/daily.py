@@ -339,7 +339,18 @@ def main() -> int:
             log.warning("TURSO_TRADING_* env 미설정 — 스냅샷·AI 수익률 배치 건너뜀")
         else:
             # ACCOUNT는 웹이 자체 체결하지 않는다 — 키움 미러링(decide 스텝)이 장중에
-            # 키움 잔고를 웹에 반영한다. 여기선 그 상태로 스냅샷만 찍는다.
+            # 키움 잔고를 웹에 반영한다. 마감 후 여기서 한 번 더 동기화해 EOD 값이
+            # 영웅문 S#와 맞게 한다(키움 조회는 마감 후에도 된다). 그 뒤 스냅샷.
+            import os
+
+            acct = int(os.environ.get("AI_ACCOUNT_ID") or 0)
+            if acct and os.environ.get("KIWOOM_APP_KEY"):
+                try:
+                    import kiwoom_order as ko
+
+                    ko.sync_from_kiwoom(tdb, ko.KiwoomOrderClient(), acct, date)
+                except Exception as e:
+                    log.warning("키움 잔고 동기화 실패 — 스킵: %s", e)
             if rows:
                 snapshot_accounts(tdb, {r[0]: r[5] for r in rows}, date)
             else:
