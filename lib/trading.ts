@@ -24,13 +24,15 @@ async function ownerCash(owner: Owner): Promise<number> {
 
 export async function getPositions(owner: Owner) {
   const rs = await tradingDb().execute({
-    sql: "SELECT ticker, qty, avg_price FROM positions WHERE owner_type = ? AND owner_id = ? AND qty > 0",
+    sql: "SELECT ticker, qty, avg_price, pnl FROM positions WHERE owner_type = ? AND owner_id = ? AND qty > 0",
     args: [owner.type, owner.id],
   });
   return rs.rows.map((r) => ({
     ticker: String(r.ticker),
     qty: Number(r.qty),
     avgPrice: Number(r.avg_price),
+    // 키움 동기화된 평가손익(수수료·세금 반영). null이면 계산 폴백(REPLAY·미동기화).
+    kiwoomPnl: r.pnl == null ? null : Number(r.pnl),
   }));
 }
 
@@ -217,22 +219,35 @@ export async function settleOwnerOrders(owner: Owner, cursor?: string): Promise<
   return results;
 }
 
-/** 포트폴리오 평가 (현금 + 보유 평가액) */
+/** 포트폴리오 평가. ACCOUNT는 키움이 기준 — 키움이 동기화한 평가손익·추정예탁자산을
+ *  그대로 쓴다(수수료·세금·예상 매도제비용 반영). 없으면(REPLAY·미동기화) 계산 폴백. */
 export async function getPortfolio(owner: Owner) {
   const cash = await ownerCash(owner);
   const positions = await getPositions(owner);
   const valued = await Promise.all(
     positions.map(async (p) => {
       const cur = (await latestClose(p.ticker)) ?? p.avgPrice;
+      const cost = p.avgPrice * p.qty;
+      const pnl = p.kiwoomPnl ?? (cur - p.avgPrice) * p.qty; // 키움 실손익 우선
       return {
-        ...p,
+        ticker: p.ticker,
+        qty: p.qty,
+        avgPrice: p.avgPrice,
         currentPrice: cur,
         value: cur * p.qty,
-        pnl: (cur - p.avgPrice) * p.qty,
-        returnPct: p.avgPrice > 0 ? (cur / p.avgPrice - 1) * 100 : 0,
+        pnl,
+        returnPct: cost > 0 ? (pnl / cost) * 100 : 0,
       };
     }),
   );
   const positionsValue = valued.reduce((s, p) => s + p.value, 0);
-  return { cash, positions: valued, equity: cash + positionsValue };
+  // 키움 추정예탁자산이 있으면 총자산으로 쓴다(예상 매도제비용까지 반영해 S#와 일치).
+  const est = owner.type === "ACCOUNT" ? await accountEstAsset(owner.id) : null;
+  return { cash, positions: valued, equity: est ?? cash + positionsValue };
+}
+
+async function accountEstAsset(id: number): Promise<number | null> {
+  const rs = await tradingDb().execute({ sql: "SELECT est_asset FROM accounts WHERE id = ?", args: [id] });
+  const v = rs.rows[0]?.est_asset;
+  return v == null ? null : Number(v);
 }

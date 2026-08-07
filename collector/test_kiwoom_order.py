@@ -222,18 +222,19 @@ assert client.token_calls == 1, "토큰을 루프 전에 한 번 받아야 한�
 print("토큰 선발급 회귀 테스트 OK")
 
 # --- 키움 → 웹 동기화 (키움이 기준) ---
-POS_JSON = {"acnt_evlt_remn_indv_tot": [
-    {"stk_cd": "005930", "rmnd_qty": "000000000003", "pur_pric": "000000240000"},
-    {"stk_cd": "A000660", "rmnd_qty": "2", "pur_pric": "1,718,000"},  # A 접두사·콤마
-    {"stk_cd": "005930", "rmnd_qty": "0", "pur_pric": "0"},           # 수량 0 → 버림
+POS_JSON = {"prsm_dpst_aset_amt": "000000009800000", "acnt_evlt_remn_indv_tot": [
+    {"stk_cd": "005930", "rmnd_qty": "000000000003", "pur_pric": "000000240000", "evltv_prft": "-00000000005000"},
+    {"stk_cd": "A000660", "rmnd_qty": "2", "pur_pric": "1,718,000", "evltv_prft": "000000012000"},  # A·콤마
+    {"stk_cd": "005930", "rmnd_qty": "0", "pur_pric": "0", "evltv_prft": "0"},  # 수량 0 → 버림
 ]}
 pos = ko.parse_positions(POS_JSON)
 assert pos == [
-    {"ticker": "005930", "qty": 3, "avg_price": 240000},
-    {"ticker": "000660", "qty": 2, "avg_price": 1718000},
+    {"ticker": "005930", "qty": 3, "avg_price": 240000, "pnl": -5000},  # 부호 유지(손실)
+    {"ticker": "000660", "qty": 2, "avg_price": 1718000, "pnl": 12000},
 ], pos
 assert ko.parse_positions({}) == [] and ko.parse_positions({"acnt_evlt_remn_indv_tot": None}) == []
 assert ko._num("000000010000000") == 10000000 and ko._num("-1,234") == 1234 and ko._num("") == 0
+assert ko._snum("-00000000019702") == -19702 and ko._snum("+123") == 123 and ko._snum("") == 0
 
 
 class SyncClient:
@@ -266,9 +267,10 @@ ORDERS = [
 sdb = SyncDb(ORDERS)
 ko.sync_from_kiwoom(sdb, SyncClient(), 1, "2026-08-05")
 sqls = [s[0] for s in sdb.batch]
-assert sdb.batch[0] == ("UPDATE accounts SET cash = ? WHERE id = ?", (9500000, 1)), "예수금 반영"
+assert sdb.batch[0] == ("UPDATE accounts SET cash = ?, est_asset = ? WHERE id = ?", (9500000, 9800000, 1)), sdb.batch[0]
 assert any("DELETE FROM positions" in s for s in sqls)
-assert sum(1 for s in sqls if "INSERT INTO positions" in s) == 2, "보유 2종목 반영"
+ins = [s for s in sdb.batch if "INSERT INTO positions" in s[0]]
+assert len(ins) == 2 and ins[0][1] == (1, "005930", 3, 240000, -5000), "보유·평가손익 반영"
 assert any("status = 'FILLED'" in s for s in sqls), "키움 접수분 FILLED"
 assert any("status = 'REJECTED'" in s for s in sqls), "미전송분 REJECTED"
 assert not any("id = ? AND status = 'PENDING'" in s and s[1] == (7,) for s in sdb.batch), "미전송(빈) 주문은 손대지 않음"
