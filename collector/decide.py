@@ -521,9 +521,21 @@ def main() -> int:
 
     feats = daily_features(mdb, todo, date)
     intra = intraday_features(todo, date)
+
+    # 보유 종목은 일봉이 없어도(ETF·상폐 등) 판단에서 빼지 않는다 — AI가 청산을
+    # 결정할 수 있어야 한다(안 그러면 영원히 못 파는 좀비). 일봉이 없으면 키움
+    # 동기화된 현재가/보유가로 최소 행을 만들어 AI가 보게 한다.
+    pos_px = {
+        str(p["ticker"]): int(p.get("currentPrice") or p.get("avgPrice") or 0)
+        for p in portfolio.get("positions", [])
+    }
+    for t in holdings:
+        if t not in feats and pos_px.get(t):
+            feats[t] = {"close": pos_px[t], "n": 0}
+
     missing = [t for t in todo if t not in feats]
     if missing:
-        log.warning("일봉 없음으로 제외: %s", ",".join(missing))
+        log.warning("데이터 없음으로 제외(보유 아님): %s", ",".join(missing))
     todo = [t for t in todo if t in feats]
     if not todo:
         log.error("지표를 만들 수 있는 종목이 없음")
