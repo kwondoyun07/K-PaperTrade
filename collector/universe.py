@@ -13,14 +13,25 @@ def krx_listing() -> pd.DataFrame:
     return fdr.StockListing("KRX")
 
 
+def _etf_codes() -> set[str]:
+    """KRX ETF 종목코드. StockListing('KRX')에 ETF가 시총 상위로 섞여 들어와
+    (예: 채권형 ETF), 걸러내지 않으면 AI가 현금성 자산을 매매한다."""
+    try:
+        return set(fdr.StockListing("ETF/KR")["Symbol"].astype(str))
+    except Exception:
+        return set()  # 목록 실패 시 제외 안 함(진행은 계속)
+
+
 def watchlist(n: int = 50, listing: pd.DataFrame | None = None) -> list[str]:
-    """시가총액 상위 n종목 (KOSPI+KOSDAQ). 과거 분봉 백필 대상 선정용.
+    """시가총액 상위 n종목 (KOSPI+KOSDAQ, ETF 제외). 매매·백필 대상 선정용.
 
     전 종목 1년치는 키움 초당 1회 제한 때문에 80시간대라 비현실적이다.
     전략 검증은 유동성 있는 종목에서 하는 게 의미도 크므로 시총 상위로 좁힌다.
+    ETF는 제외한다 — 시총 상위에 채권/현금성 ETF가 섞여 매매되면 안 되므로.
     """
     df = listing if listing is not None else krx_listing()
     df = df[~df["Market"].astype(str).str.upper().str.contains("KONEX")]
+    df = df[~df["Code"].astype(str).isin(_etf_codes())]
     top = df.nlargest(n, "Marcap")
     return [str(c) for c in top["Code"]]
 
