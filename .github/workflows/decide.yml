@@ -50,6 +50,11 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           TURSO_KRX_MARKET_URL: ${{ secrets.TURSO_KRX_MARKET_URL }}
           TURSO_KRX_MARKET_AUTH_TOKEN: ${{ secrets.TURSO_KRX_MARKET_AUTH_TOKEN }}
+          # decision_price(판단 시점 기준가)를 ai_decisions에 직접 기록하는 데 필요하다.
+          # 없으면 Turso.from_env("TRADING")이 None이라 기록이 통째로 생략되고,
+          # 모든 수익률이 판단일 종가 폴백으로 계산돼 측정 수정이 무효가 된다.
+          TURSO_TRADING_URL: ${{ secrets.TURSO_TRADING_URL }}
+          TURSO_TRADING_AUTH_TOKEN: ${{ secrets.TURSO_TRADING_AUTH_TOKEN }}
           # 장중 지표를 당일 분봉에서 직접 뽑는다. 없으면 네이버로 폴백되지만
           # 당일 데이터는 양쪽 다 되므로 공식 소스인 키움을 쓴다.
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
@@ -58,6 +63,12 @@ jobs:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          # 멀티모델 앙상블. 전원 합의한 BUY/SELL만 실행하고 갈리면 HOLD.
+          # 미설정이면 1 = 켜짐. 모델 목록은 ensemble.DEFAULT_MODELS(opus,sonnet,gemini-*).
+          AI_ENSEMBLE: ${{ vars.AI_ENSEMBLE }}
+          AI_ENSEMBLE_MODELS: ${{ vars.AI_ENSEMBLE_MODELS }}
+          # 없으면 gemini만 조용히 빠지고 claude 모델들로 진행한다.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # 킬 스위치: 저장소 변수 하나로 자동 주문만 끈다(판단 기록은 계속된다).
           # 미설정이면 0 = 주문 안 나감. 켜려면 저장소 Variables에 AI_AUTOTRADE=1.
           AI_AUTOTRADE: ${{ vars.AI_AUTOTRADE || '0' }}

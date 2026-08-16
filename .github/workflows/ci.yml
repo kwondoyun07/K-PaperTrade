@@ -45,6 +45,7 @@ jobs:
       # 네트워크·시크릿 없이 도는 것만. 실제 수집은 collect 워크플로가 한다.
       - run: uv run python test_parse.py
       - run: uv run python test_decide.py
+      - run: uv run python test_indices.py
       - run: uv run python test_kiwoom_order.py
       - run: uv run python test_reports.py
       - run: uv run python test_dart.py
