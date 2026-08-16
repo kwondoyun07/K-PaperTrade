@@ -266,13 +266,21 @@ def build_prompt(rows: list[str], holdings: dict[str, int], track: str = "") -> 
 
 def track_record() -> str:
     """과거 판단의 실제 성과 요약 — AI가 자기 track record에서 배우게 한다. 근거 없는
-    '줏대'를 막고, 뭐가 통했는지 데이터로 스스로 보정하게. 데이터가 없으면 빈 문자열."""
+    '줏대'를 막고, 뭐가 통했는지 데이터로 스스로 보정하게. 데이터가 없으면 빈 문자열.
+
+    ret_basis='decision' 행만 쓴다. 폴백(판단일 종가 기준) 행은 같은 날 같은 종목의
+    BUY와 HOLD에 같은 값을 주고 BUY에만 핸디캡을 실어(실측 3.91pp 역전), 그대로 먹이면
+    측정 산물을 "네 BUY는 부진했다"는 사실인 양 모델에 학습시킨다. 신뢰할 수 있는 행이
+    쌓이기 전엔 빈 문자열 — 틀린 신호보다 없는 신호가 낫다.
+    """
     try:
         rows = api_get("/ai-decisions?limit=200").get("decisions", [])
     except Exception:  # 보조 신호라 실패해도 판단은 계속
         return ""
     agg: dict[str, list[float]] = {"BUY": [], "SELL": [], "HOLD": []}
     for d in rows:
+        if d.get("ret_basis") != "decision":
+            continue
         r = d.get("ret_d5")
         a = d.get("action")
         if r is not None and a in agg:
@@ -293,15 +301,18 @@ def track_record() -> str:
 # ---------------------------------------------------------------- claude -p
 
 
-def ask_claude(prompt: str, timeout: int = 300) -> list[dict]:
-    """claude -p 호출 → 응답 JSON의 result 텍스트에서 배열을 파싱. 실패하면 빈 리스트."""
+def ask_claude(prompt: str, timeout: int = 300, model: str | None = None) -> list[dict]:
+    """claude -p 호출 → 응답 JSON의 result 텍스트에서 배열을 파싱. 실패하면 빈 리스트.
+
+    model은 CLI 별칭(opus/sonnet/haiku) 또는 정식 모델명. None이면 계정 기본 모델.
+    """
     exe = shutil.which("claude")
     if not exe:
         log.error("claude CLI 없음 — 판단 건너뜀")
         return []
     try:
         r = subprocess.run(
-            [exe, "-p", "--output-format", "json"],
+            [exe, "-p", "--output-format", "json", *(["--model", model] if model else [])],
             input=prompt,
             capture_output=True,
             text=True,
@@ -460,20 +471,38 @@ def api_post(path: str, body: dict | None, dry: bool):
     return r.json()
 
 
-def record_decisions(decisions: list[dict], ts: str, dry: bool) -> list[dict]:
+def record_decisions(decisions: list[dict], ts: str, dry: bool,
+                     prices: dict[str, int] | None = None, tdb: Turso | None = None) -> list[dict]:
     """판단 기록. 기록에 성공한 것만 주문 후보로 돌려준다.
 
     기록 실패분을 주문하면 다음 실행의 멱등 컷(당일 기록 있는 종목 스킵)이 그
     종목을 못 걸러 같은 주문이 한 번 더 나간다. 멱등 키가 기록 하나뿐이라 그렇다.
+
+    prices[ticker] = 판단 시점에 AI가 실제로 본 가격 → decision_price로 남긴다.
+    이게 수익률(ret_d5)의 기준가다. 판단일 종가를 기준가로 쓰면 같은 날 같은 종목의
+    BUY와 HOLD가 같은 값을 받고, 그날 오른 종목을 사는 AI에 핸디캡이 실린다.
+    /ai-decisions 라우트에 필드가 없어 기록 직후 trading DB에 직접 적는다(id로 특정).
     """
     out = []
     for d in decisions:
         body = {"ticker": d["ticker"], "ts": ts, "action": d["action"],
                 "reasonSummary": d["reason"], "source": SOURCE}
-        if api_post("/ai-decisions", body, dry):
-            out.append(d)
-        else:
+        r = api_post("/ai-decisions", body, dry)
+        if not r:
             log.error("판단 기록 실패 %s — 주문 후보에서 제외", d["ticker"])
+            continue
+        out.append(d)
+        px = (prices or {}).get(d["ticker"]) or 0
+        if dry:
+            log.info("[dry-run] decision_price %s = %s", d["ticker"], f"{px:,}" if px else "없음")
+        elif px and tdb and r.get("id"):
+            try:
+                tdb.execute("UPDATE ai_decisions SET decision_price = ? WHERE id = ?",
+                            (float(px), int(r["id"])))
+            except Exception as e:  # 기준가가 없으면 그 행은 폴백으로 계산될 뿐, 판단·주문은 계속
+                log.warning("decision_price 기록 실패 %s: %s", d["ticker"], e)
+        elif px:
+            log.warning("decision_price 기록 생략 %s (TRADING env 또는 id 없음)", d["ticker"])
     return out
 
 
@@ -546,15 +575,19 @@ def main() -> int:
     newz = news.fetch_many({t: names.get(t, "") for t in todo})  # 구글 뉴스 헤드라인
     rows = [format_row(t, names.get(t, ""), feats[t], intra.get(t), cons.get(t), disc.get(t), newz.get(t)) for t in todo]
     prompt = build_prompt(rows, holdings, track_record())
-    log.info("프롬프트 %d자 — claude -p 호출", len(prompt))
-    decisions = validate(ask_claude(prompt), todo)
+    import ensemble  # 여기서 import — ensemble이 이 모듈의 파서를 쓰므로 순환을 피한다
+
+    log.info("프롬프트 %d자 — 앙상블 판단", len(prompt))
+    decisions = ensemble.decide_all(prompt, todo)
     if not decisions:
         log.error("유효한 판단 없음")
         return 1
     for d in decisions:
         log.info("판단 %s %s — %s", d["ticker"], d["action"], d["reason"])
 
-    recorded = record_decisions(decisions, ts, a.dry_run)
+    # 판단 시점 가격 — 장중 분봉 최신가가 AI가 실제로 본 값이고, 없으면 일봉 종가.
+    px_now = {t: int((intra.get(t) or {}).get("last") or feats[t].get("close") or 0) for t in todo}
+    recorded = record_decisions(decisions, ts, a.dry_run, px_now, Turso.from_env("TRADING"))
 
     # 게이트를 주문 직전에 **다시** 판정한다. 시작 시점 검사만으로는 부족하다 —
     # 그 사이에 claude -p(최대 5분)와 여러 네트워크 호출이 끼어들어, 15:20에 시작한
