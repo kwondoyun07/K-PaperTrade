@@ -61,6 +61,10 @@ jobs:
           KIWOOM_APP_SECRET: ${{ secrets.KIWOOM_APP_SECRET }}
           # DART 전자공시 (무료 키). 없으면 공시 없이 진행.
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          # 뉴스 기사 본문(Jina Reader). 키가 없어도 되지만 공용 IP에서는 Cloudflare에
+          # 막히는 일이 잦다 — 실패하면 헤드라인만으로 판단하므로 없어도 무해하다.
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+          AI_NEWS_BODIES: ${{ vars.AI_NEWS_BODIES }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           # 멀티모델 앙상블. 전원 합의한 BUY/SELL만 실행하고 갈리면 HOLD.
