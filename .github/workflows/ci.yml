@@ -50,3 +50,5 @@ jobs:
       - run: uv run python test_reports.py
       - run: uv run python test_dart.py
       - run: uv run python test_news.py
+      - run: uv run python test_ensemble.py
+      - run: uv run python test_kstockdata.py

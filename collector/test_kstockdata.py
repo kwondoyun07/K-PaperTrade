@@ -81,3 +81,38 @@ if "--live" in sys.argv:
     sig = [k for k, v in pp.items() if v["significant"]]
     print(f"live priors: {len(pp)}유형, 유의(CI가 0 미포함): {sig or '없음'}")
     print("라이브 OK —", ks.CITATION)
+
+# --- 액면분할 보정 (무보정 종가 → 소급 보정) ---
+# 실측 근거: 010120이 2026-04-13에 5:1 분할. 원본 갭은 788,000 → 179,200(4.397배)로
+# 정수 배수가 아니다(당일 주가 +13.7%가 섞임). 그래서 배수를 맞추려 하지 않고
+# 관측 비율로 이어붙인다 — 구간 내 수익률은 전부 정확해지고 오차는 경계 하루로 갇힌다.
+split = [
+    {"date": "2026-04-08", "close": 800000, "volume": 100},
+    {"date": "2026-04-10", "close": 788000, "volume": 120},
+    {"date": "2026-04-13", "close": 179200, "volume": 600},  # 분할
+    {"date": "2026-04-14", "close": 185000, "volume": 500},
+]
+adj = ks.adjust_splits(split)
+assert adj[-1]["close"] == 185000 and adj[-2]["close"] == 179200, "최신 구간은 그대로여야"
+r = 788000 / 179200
+assert adj[0]["close"] == round(800000 / r) and adj[1]["close"] == round(788000 / r), adj
+assert adj[1]["volume"] == round(120 * r), "거래량은 반대로 곱한다"
+# 경계를 넘는 수익률이 ±30% 안으로 들어온다(원본은 -77%)
+before = 179200 / 788000 - 1
+after = adj[2]["close"] / adj[1]["close"] - 1
+assert before < -0.7 and abs(after) < 0.01, f"경계 수익률 {before:.3f} → {after:.3f}"
+# 구간 내 수익률은 보존된다
+assert abs((adj[1]["close"] / adj[0]["close"]) - (788000 / 800000)) < 1e-6
+
+# 정상 등락(가격제한 안)은 절대 건드리지 않는다 — 오탐 방지
+normal = [
+    {"date": "2026-04-08", "close": 100000, "volume": 10},
+    {"date": "2026-04-10", "close": 71000, "volume": 20},   # -29%, 하한가 근처
+    {"date": "2026-04-13", "close": 92000, "volume": 30},   # +29.6%
+]
+assert ks.adjust_splits(normal) == normal, "정상 등락을 분할로 오인했다"
+assert ks.corporate_action_ratio(100000, 71000) is None
+assert ks.corporate_action_ratio(788000, 179200) is not None
+assert ks.adjust_splits([]) == [] and len(ks.adjust_splits(split[:1])) == 1
+
+print("액면분할 보정 테스트 OK")

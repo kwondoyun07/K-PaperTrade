@@ -77,6 +77,51 @@ def parse_history(payload: dict) -> list[dict]:
     ]
 
 
+# 액면분할·병합 보정 -----------------------------------------------------------
+# KRX 정규장 가격제한은 ±30%다. 하루 만에 종가가 0.7배 아래·1.43배 위로 움직이는 건
+# **주가 변동으로는 불가능**하고 코퍼레이트 액션(분할·병합·액면변경)뿐이다.
+# 이 물리적 한계가 폭락과 분할을 가르는 기준이다.
+#
+# 배수를 '5:1' 같은 정수로 맞추려 하지 않는다. 실제 갭에는 그날의 주가 변동이 섞여
+# 있어서(실측 010120: 5:1 분할인데 갭은 4.397배 — 당일 +13.7%가 겹침) 가격만으로는
+# 4:1과 5:1을 구분할 수 없다. 다행히 **수익률에는 절대 레벨이 아니라 경계의 연속성만**
+# 중요하다. 관측된 비율로 그대로 이어붙이면 구간 내 모든 수익률이 정확해지고,
+# 오차는 경계 당일 하루치(그날 수익률이 0으로 눌림, 최대 ±30%)로 갇힌다.
+_LIMIT = 1.43  # 1/0.7
+
+
+def corporate_action_ratio(older: float, newer: float) -> float | None:
+    """연속 거래일 종가비가 가격제한을 넘으면 그 비율(=코퍼레이트 액션 배수). 아니면 None."""
+    if older <= 0 or newer <= 0:
+        return None
+    r = older / newer
+    return r if (r >= _LIMIT or r <= 1 / _LIMIT) else None
+
+
+def adjust_splits(rows: list[dict]) -> list[dict]:
+    """무보정 종가 시계열 → 최신 주식수 기준 소급 보정(back-adjust).
+
+    이 소스는 무보정이라 그대로 수익률을 내면 5:1 분할이 -80% 급락으로 잡힌다.
+    최신 값을 참으로 두고 과거를 관측 비율로 나눈다. 거래량은 반대로 곱한다
+    (분할 전 1주 = 분할 후 n주).
+
+    한계: 경계 당일 수익률은 0에 가깝게 눌린다(분할과 주가변동이 분리되지 않음).
+    구간 내 수익률은 전부 정확하다. rows는 date 오름차순, 원본은 바꾸지 않는다.
+    """
+    if len(rows) < 2:
+        return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    cum = 1.0
+    for i in range(len(rows) - 1, 0, -1):
+        f = corporate_action_ratio(float(rows[i - 1]["close"]), float(rows[i]["close"]))
+        if f:
+            cum *= f
+        if cum != 1.0:
+            out[i - 1]["close"] = round(float(rows[i - 1]["close"]) / cum)
+            out[i - 1]["volume"] = round(float(rows[i - 1].get("volume") or 0) * cum)
+    return out
+
+
 def parse_priors(payload: dict, horizon: str = "h5") -> dict[str, dict]:
     """disclosure_impact.json → {공시유형: {excess_pct, up_ratio_pct, n, significant}}.
 
@@ -104,15 +149,19 @@ def quotes(client: httpx.Client | None = None) -> list[dict]:
     return parse_quotes(fetch("quotes.json", client))
 
 
-def history(code: str, client: httpx.Client | None = None) -> list[dict]:
-    """없는 종목은 빈 리스트. 이 소스의 유니버스는 ~1,500이라 우리 watchlist에도 구멍이
-    있다(005935 삼성전자우·138040 메리츠금융지주 404 실측) — 종목 순회가 예외로 죽지 않게."""
+def history(code: str, client: httpx.Client | None = None, adjust: bool = True) -> list[dict]:
+    """250거래일 종가·거래량. 기본은 분할·병합 보정본(adjust=False면 원본 그대로).
+
+    없는 종목은 빈 리스트. 이 소스의 유니버스는 ~1,500이라 우리 watchlist에도 구멍이
+    있다(005935 삼성전자우·138040 메리츠금융지주 404 실측) — 종목 순회가 예외로 죽지 않게.
+    """
     try:
-        return parse_history(fetch(f"s/{code}_history.json", client))
+        rows = parse_history(fetch(f"s/{code}_history.json", client))
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             return []
         raise
+    return adjust_splits(rows) if adjust else rows
 
 
 def priors(horizon: str = "h5", client: httpx.Client | None = None) -> dict[str, dict]:
