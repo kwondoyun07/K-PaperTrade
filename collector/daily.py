@@ -40,7 +40,7 @@ from backfill import collect_minutes
 from providers import make_provider
 from store import upload_release
 from turso import Turso
-from universe import krx_listing, krx_stocks
+from universe import etf_stocks, krx_listing, krx_stocks
 
 KST = ZoneInfo("Asia/Seoul")
 log = logging.getLogger(__name__)
@@ -386,7 +386,9 @@ def main() -> int:
         log.warning("TURSO_KRX_MARKET_* env 미설정 — Turso 적재 건너뜀")
     else:
         now = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
-        upsert_stocks(db, stocks, now)
+        # ETF 이름도 같이 넣는다 — 화면에 코드만 뜨는 걸 막기 위한 이름 소스일 뿐,
+        # 수집 유니버스(tickers)에는 넣지 않는다.
+        upsert_stocks(db, stocks + etf_stocks(), now)
 
         valid = {s["ticker"] for s in stocks}
         rows = [r for r in daily_price_rows(date, date8, today, listing, a.out) if r[0] in valid]
