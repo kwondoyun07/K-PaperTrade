@@ -86,8 +86,9 @@ ROWS = [
 class FakeDb:
     """query()는 SELECT면 ROWS, 선점 UPDATE면 claim_ok에 따라 RETURNING 결과를 흉내낸다."""
 
-    def __init__(self, rows=None, claim_ok=True):
+    def __init__(self, rows=None, claim_ok=True, positions=None):
         self.rows = ROWS if rows is None else rows
+        self.positions = positions or []
         self.claim_ok = claim_ok
         self.updates: list[tuple] = []
         self.selected: list[tuple] = []
@@ -95,6 +96,9 @@ class FakeDb:
 
     def query(self, sql, args=()):
         if sql.strip().upper().startswith("SELECT"):
+            # 기준가 폴백용 보유 조회 — 미러링 대상 조회와 구분한다
+            if "positions" in sql:
+                return self.positions
             assert "COALESCE(o.broker_order_id, '') = ''" in sql, "멱등 필터 없음"
             assert "o.owner_id = ?" in sql, "owner_id 필터 없음"
             self.selected.append(args)
@@ -275,3 +279,32 @@ assert any("status = 'FILLED'" in s for s in sqls), "키움 접수분 FILLED"
 assert any("status = 'REJECTED'" in s for s in sqls), "미전송분 REJECTED"
 assert not any("id = ? AND status = 'PENDING'" in s and s[1] == (7,) for s in sdb.batch), "미전송(빈) 주문은 손대지 않음"
 print("키움→웹 동기화 테스트 OK")
+
+# --- ETF 등 daily_prices에 없는 종목: 보유 매입가로 기준가 폴백 ---
+# 실측: 153130(채권 ETF)이 매일 SELL 판정을 받고도 daily_prices에 0행이라 기준가가
+# 없어 거부됐다("기준가 없음"). 폴백이 없으면 ETF 보유분은 영원히 못 판다.
+class MDbNone:
+    def query(self, sql, args=()):
+        return []          # daily_prices에 없음
+
+
+class PosDb:
+    def query(self, sql, args=()):
+        assert "positions" in sql
+        return [{"ticker": "153130", "avg_price": 113360}]
+
+
+refs = ko.latest_closes(MDbNone(), ["153130"], PosDb(), 1)
+assert refs == {"153130": 113360}, refs
+# 계좌 미지정이면 폴백 안 함(남의 계좌 보유가를 끌어오지 않게)
+assert ko.latest_closes(MDbNone(), ["153130"], PosDb(), 0) == {}
+# daily_prices에 있으면 그쪽이 우선(매입가는 근사치일 뿐)
+class MDbHas:
+    def query(self, sql, args=()):
+        return [{"close": 120000}]
+assert ko.latest_closes(MDbHas(), ["153130"], PosDb(), 1) == {"153130": 120000}
+
+# 폴백 기준가로 실제 주문 페이로드가 만들어진다(전엔 LimitError로 죽었다)
+pl = ko.order_payload("SELL", "153130", 6, "MARKET", None, refs["153130"])
+assert pl["stk_cd"] == "153130" and pl["ord_qty"] == "6"
+print("ETF 기준가 폴백 테스트 OK")

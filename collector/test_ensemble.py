@@ -156,3 +156,32 @@ for k, v in _saved.items():
     if v is None: os.environ.pop(k, None)
     else: os.environ[k] = v
 print("정족수 우회 회귀 테스트 OK")
+
+# --- 일시 오류 재시도 (Gemini 503) ---
+# 실측: gemini-3.7-flash가 503을 자주 뱉고 재호출하면 성공한다. 재시도가 없으면
+# 3모델 설정이 매 판단마다 2모델로 조용히 격하되고 BUY가 정족수에 더 자주 걸린다.
+calls = {"n": 0}
+def flaky(prompt, timeout, model):
+    calls["n"] += 1
+    if calls["n"] == 1:
+        raise RuntimeError("Server error '503 Service Unavailable' for url ...")
+    return [{"ticker": "005930", "action": "BUY", "reason": "재시도 성공"}]
+_orig = ensemble.ask_claude
+ensemble.ask_claude = flaky
+try:
+    r = ensemble.ask_model("opus", "p", ["005930"])
+    assert calls["n"] == 2, f"503인데 재시도를 안 했다 (호출 {calls['n']}회)"
+    assert r and r[0]["action"] == "BUY", r
+    # 재시도해도 소용없는 오류는 즉시 포기한다(시간 낭비 방지)
+    calls["n"] = 0
+    def fatal(prompt, timeout, model):
+        calls["n"] += 1
+        raise RuntimeError("invalid api key")
+    ensemble.ask_claude = fatal
+    assert ensemble.ask_model("opus", "p", ["005930"]) == []
+    assert calls["n"] == 1, "재시도 가치 없는 오류인데 재시도했다"
+finally:
+    ensemble.ask_claude = _orig
+assert ensemble._worth_retry(RuntimeError("503 Service Unavailable"))
+assert not ensemble._worth_retry(RuntimeError("invalid api key"))
+print("일시 오류 재시도 테스트 OK")

@@ -22,6 +22,7 @@
 
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -81,18 +82,37 @@ def ask_gemini(model: str, prompt: str, timeout: int) -> list[dict]:
     return parse_decisions("".join(p.get("text", "") for p in parts))
 
 
-def ask_model(model: str, prompt: str, universe: list[str], timeout: int = 300) -> list[dict]:
+# 일시적 서버 오류는 재시도한다. Gemini 무료 티어가 503(Service Unavailable)을 자주
+# 뱉는데 재호출하면 대개 성공한다(실측: 3회 중 1회 200). 재시도가 없으면 3모델 설정이
+# 매 판단마다 2모델로 조용히 격하되고, 정족수 때문에 BUY가 더 자주 보류된다.
+_RETRY_HINTS = ("503", "502", "504", "429", "overloaded", "unavailable", "timeout", "timed out")
+
+
+def _worth_retry(e: Exception) -> bool:
+    m = str(e).lower()
+    return any(h in m for h in _RETRY_HINTS)
+
+
+def ask_model(model: str, prompt: str, universe: list[str], timeout: int = 300,
+              attempts: int = 2) -> list[dict]:
     """한 모델의 판단. 어떤 실패든 빈 리스트 — 한 모델 장애가 배치를 멈추면 안 된다."""
-    try:
-        items = (
-            ask_gemini(model, prompt, timeout)
-            if model.startswith("gemini")
-            else ask_claude(prompt, timeout, model or None)
-        )
-    except Exception as e:
-        log.error("%s 호출 실패: %s", model or "claude", e)
-        return []
-    out = validate(items, universe)
+    items = None
+    for i in range(attempts):
+        try:
+            items = (
+                ask_gemini(model, prompt, timeout)
+                if model.startswith("gemini")
+                else ask_claude(prompt, timeout, model or None)
+            )
+            break
+        except Exception as e:
+            last = i == attempts - 1
+            if last or not _worth_retry(e):
+                log.error("%s 호출 실패: %s", model or "claude", e)
+                return []
+            log.warning("%s 일시 오류 — 재시도: %s", model or "claude", str(e)[:80])
+            time.sleep(3)
+    out = validate(items or [], universe)
     log.info("%s 판단 %d건", model or "claude", len(out))
     return out
 
