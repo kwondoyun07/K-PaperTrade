@@ -32,8 +32,10 @@ from decide import ask_claude, parse_decisions, validate
 log = logging.getLogger(__name__)
 
 # claude 별칭은 `claude -p --model`로 실측 확인(opus→claude-opus-5, sonnet→claude-sonnet-5).
-# gemini 모델명은 키가 생기면 env로 갈아끼운다.
-DEFAULT_MODELS = "opus,sonnet,gemini-2.5-pro"
+# gemini는 gemini-3.7-flash — 무료 티어에서 실제로 응답하는 모델이다. pro 계열은 전부
+# RESOURCE_EXHAUSTED이고 gemini-2.5-pro는 신규 사용자에게 아예 차단됐다(2026-08 실측).
+# 기본값이 죽은 모델이면 env를 안 준 실행이 매번 조용히 한 모델을 잃는다.
+DEFAULT_MODELS = "opus,sonnet,gemini-3.7-flash"
 
 # BUY에 필요한 최소 응답 모델 수. 2인 이유: 기본 구성이 실질 2모델(gemini는 키가 없어
 # 빠짐)이라 3을 걸면 BUY가 영영 안 나오고, 1이면 모델 하나가 죽는 순간 교차검증이
