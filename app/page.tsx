@@ -5,18 +5,16 @@ import { NEUTRAL, UP } from "@/lib/format";
 import { isMarketOpen } from "@/lib/market-hours";
 import Dashboard from "@/components/Dashboard";
 import StockDetail from "@/components/StockDetail";
-import Replay from "@/components/Replay";
 import Orders from "@/components/Orders";
 import AiLog from "@/components/AiLog";
 import { j, post, type StockRow } from "@/components/client";
 
-type Screen = "dash" | "detail" | "replay" | "orders" | "ai";
+type Screen = "dash" | "detail" | "orders" | "ai";
 type Account = { id: number; name: string; initial_cash: number; cash: number };
 
 const NAV: { key: Screen; label: string }[] = [
   { key: "dash", label: "대시보드" },
   { key: "detail", label: "종목 상세" },
-  { key: "replay", label: "리플레이" },
   { key: "orders", label: "주문·체결" },
   { key: "ai", label: "AI 판단 로그" },
 ];
@@ -28,7 +26,6 @@ export default function App() {
   const [q, setQ] = useState("");
   const [results, setResults] = useState<StockRow[]>([]);
   const [detailTicker, setDetailTicker] = useState("005930");
-  const [replayPlaying, setReplayPlaying] = useState(false);
   const [toast, setToast] = useState<{ msg: string; dot: string } | null>(null);
 
   const notify = useCallback((msg: string, ok: boolean) => {
@@ -76,8 +73,8 @@ export default function App() {
 
   const account = accounts.find((a) => a.id === accountId) ?? null;
   const marketOpen = isMarketOpen();
-  const statusLabel = screen === "replay" && replayPlaying ? "리플레이 중" : marketOpen ? "장중" : "장마감";
-  const statusColor = screen === "replay" && replayPlaying ? UP : marketOpen ? "#4CAF7D" : "#5C5E68";
+  const statusLabel = marketOpen ? "장중" : "장마감";
+  const statusColor = marketOpen ? "#4CAF7D" : "#5C5E68";
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
@@ -166,9 +163,6 @@ export default function App() {
           </div>
           <div style={{ display: screen === "detail" ? undefined : "none" }}>
             <StockDetail ticker={detailTicker} account={account} active={screen === "detail"} notify={notify} />
-          </div>
-          <div style={{ display: screen === "replay" ? undefined : "none" }}>
-            <Replay initialStock={detailTicker} active={screen === "replay"} onPlayingChange={setReplayPlaying} notify={notify} />
           </div>
           <div style={{ display: screen === "orders" ? undefined : "none" }}>
             <Orders accountId={accountId} active={screen === "orders"} />
