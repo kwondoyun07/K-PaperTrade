@@ -9,6 +9,9 @@ type Decision = {
   id: number; ticker: string; ts: string; action: "BUY" | "SELL" | "HOLD";
   reason_summary: string | null; source: string | null;
   ret_d5: number | null; ret_d20: number | null; ret_d60: number | null;
+  // 'decision' = 판단 시점가 기준(신뢰 가능). 그 외(NULL·'close')는 판단일 종가 기준이라
+  // 같은 날·같은 종목의 BUY와 HOLD가 같은 값을 받는 옛 계산이다 — 화면에서 구분해 표시한다.
+  ret_basis: string | null;
 };
 
 const th: React.CSSProperties = {
@@ -25,8 +28,18 @@ const ACTION_STYLE = {
   HOLD: { color: NEUTRAL, background: "#1C1C22", label: "관망" },
 } as const;
 
-const ret = (v: number | null) =>
-  v == null ? <span style={{ color: "#5C5E68" }}>—</span> : <span style={{ color: clr(v) }}>{pct(v)}</span>;
+const ret = (v: number | null, trusted = true) => {
+  if (v == null) return <span style={{ color: "#5C5E68" }}>—</span>;
+  // 옛 기준(판단일 종가)으로 계산된 값은 흐리게 + 별표. 색까지 그대로 주면 신뢰할 수
+  // 있는 숫자로 오독된다 — 실제로 그 값들로 잘못된 결론을 낸 적이 있다.
+  if (!trusted)
+    return (
+      <span style={{ color: "#5C5E68" }} title="판단일 종가 기준(옛 계산) — 신뢰할 수 없음">
+        {pct(v)}*
+      </span>
+    );
+  return <span style={{ color: clr(v) }}>{pct(v)}</span>;
+};
 
 export default function AiLog({ active }: { active: boolean }) {
   const [rows, setRows] = useState<Decision[]>([]);
@@ -45,7 +58,10 @@ export default function AiLog({ active }: { active: boolean }) {
       <div className="card" style={{ padding: 18 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12 }}>
           <span style={{ fontSize: 15, fontWeight: 700 }}>AI 판단 로그</span>
-          <span style={{ fontSize: 12, color: "#5C5E68" }}>판단 이후 수익률(d5/d20/d60)은 장 마감 배치가 채웁니다</span>
+          <span style={{ fontSize: 12, color: "#5C5E68" }}>
+            판단이 맞았는지 채점 — 그 종목이 <b>판단 시점 대비</b> 며칠 뒤 얼마나 올랐나.
+            BUY는 높을수록, SELL은 낮을수록 맞은 것. 해당 거래일이 지나야 채워집니다(+20일·+60일은 아직 축적 중).
+          </span>
         </div>
         {rows.length ? (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -55,9 +71,9 @@ export default function AiLog({ active }: { active: boolean }) {
                 <th style={{ ...th, textAlign: "left" }}>종목</th>
                 <th style={{ ...th, textAlign: "center" }}>판단</th>
                 <th style={{ ...th, textAlign: "left" }}>근거 요약</th>
-                <th style={th}>+5일</th>
-                <th style={th}>+20일</th>
-                <th style={th}>+60일</th>
+                <th style={th} title="판단 후 5거래일 뒤 수익률">5일 후</th>
+                <th style={th} title="판단 후 20거래일 뒤 수익률">20일 후</th>
+                <th style={th} title="판단 후 60거래일 뒤 수익률">60일 후</th>
                 <th style={{ ...th, textAlign: "left" }}>출처</th>
               </tr>
             </thead>
@@ -79,9 +95,9 @@ export default function AiLog({ active }: { active: boolean }) {
                     <td style={{ ...td, textAlign: "left", color: "#B7B9C2", fontSize: 12, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {d.reason_summary ?? "—"}
                     </td>
-                    <td style={td}>{ret(d.ret_d5)}</td>
-                    <td style={td}>{ret(d.ret_d20)}</td>
-                    <td style={td}>{ret(d.ret_d60)}</td>
+                    <td style={td}>{ret(d.ret_d5, d.ret_basis === "decision")}</td>
+                    <td style={td}>{ret(d.ret_d20, d.ret_basis === "decision")}</td>
+                    <td style={td}>{ret(d.ret_d60, d.ret_basis === "decision")}</td>
                     <td style={{ ...td, textAlign: "left", color: "#5C5E68", fontSize: 12 }}>{d.source ?? "—"}</td>
                   </tr>
                 );
