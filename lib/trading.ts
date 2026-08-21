@@ -1,4 +1,5 @@
-// 주문·체결·잔고 DB 레이어 — 라이브 계좌(ACCOUNT)와 리플레이 세션(REPLAY)이
+// 주문·체결·잔고 DB 레이어 — 라이브 계좌(ACCOUNT) 기준. Owner 유니언에 REPLAY가
+// 남은 건 제거된 리플레이 기능의 잔재다. 머니 경로를 건드리는 리팩터링이라 그대로 뒀다.
 // owner_type/owner_id로 동일 테이블·동일 체결 엔진을 공유한다. 서버 전용.
 import { tradingDb } from "@/lib/db";
 import { getMinuteBars, latestClose, prevDayClose } from "@/lib/minutes";
@@ -107,7 +108,7 @@ export type SettleResult = {
 };
 
 /**
- * PENDING 주문 정산. cursor를 주면(리플레이) 그 이전 분봉만 사용 — 서버측 룩어헤드 컷.
+ * PENDING 주문 정산. cursor를 주면 그 이전 분봉만 사용한다.
  * 라이브는 cursor 없이 현재까지 쌓인 분봉으로 정산한다.
  */
 export async function settleOwnerOrders(owner: Owner, cursor?: string): Promise<SettleResult[]> {
