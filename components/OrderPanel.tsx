@@ -1,6 +1,6 @@
 "use client";
 
-// 주문 패널 — 종목 상세(라이브)와 리플레이가 공유. 제출은 부모가 처리.
+// 주문 패널 — 종목 상세에서 사용. 제출은 부모가 처리.
 import { useState } from "react";
 import { DOWN, UP, won } from "@/lib/format";
 import { estimateCost } from "@/lib/engine/fill";

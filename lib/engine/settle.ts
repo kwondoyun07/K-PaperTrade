@@ -1,4 +1,4 @@
-// 접수된 주문을 분봉 시퀀스에 대해 정산 — 라이브·리플레이 공용 (동일 엔진 공유).
+// 접수된 주문을 분봉 시퀀스에 대해 정산.
 // 룩어헤드 이중 방어: 호출측이 커서 이전 봉만 넘기고, 여기서도 접수 시각 이후만 사용.
 import type { Bar, EngineConfig, FillResult, OrderReq } from "./types";
 import { DEFAULT_CONFIG, fillOrder } from "./fill";

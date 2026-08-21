@@ -1,6 +1,6 @@
 // 분봉 서빙 — 서버 전용.
 // 소스 우선순위: 로컬 parquet(개발) → GitHub Release parquet(배포) → Turso 롤링 캐시.
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parquetReadObjects } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
@@ -126,39 +126,6 @@ export async function getMinuteBars(ticker: string, date: string): Promise<Bar[]
 
 const DATE_RE = /^minute-(\d{4}-\d{2}-\d{2})\.parquet$/;
 
-/**
- * 리플레이 가능한 일자 목록 (최신순).
- * 파일 "존재"만 보므로 parquet를 열지 않는다 — 일자별로 분봉을 조회해 확인하면
- * 전 종목 파일(62만 행)을 일자마다 파싱하게 되어 화면 진입이 수십 초 걸린다.
- */
-export async function listMinuteDates(limit = 6): Promise<string[]> {
-  const dates = new Set<string>();
-  try {
-    for (const f of await readdir(MINUTE_DIR)) {
-      const m = DATE_RE.exec(f);
-      if (m) dates.add(m[1]);
-    }
-  } catch {
-    // 로컬 디렉토리 없음 — Release만 사용
-  }
-  if (RELEASE_REPO) {
-    // 분봉 보관은 롤링이라 이번 달·지난 달 태그면 충분
-    const now = new Date(Date.now() + 9 * 3600_000);
-    const y = now.getUTCFullYear();
-    const m = now.getUTCMonth();
-    const tags = [
-      new Date(Date.UTC(y, m, 1)),
-      new Date(Date.UTC(y, m - 1, 1)),
-    ].map((d) => `minute-${d.toISOString().slice(0, 7)}`);
-    for (const tag of tags) {
-      for (const a of await releaseAssets(tag)) {
-        const mm = DATE_RE.exec(a.name);
-        if (mm) dates.add(mm[1]);
-      }
-    }
-  }
-  return [...dates].sort().reverse().slice(0, limit);
-}
 
 export function addDays(date: string, n: number): string {
   const d = new Date(`${date}T00:00:00Z`);

@@ -219,7 +219,7 @@ export default function Dashboard({
                 —
               </div>
               <span style={{ fontSize: 13, color: "#8B8D98" }}>보유종목이 없습니다</span>
-              <span style={{ fontSize: 12, color: "#5C5E68" }}>리플레이 모드에서 매매 연습을 시작해보세요</span>
+              <span style={{ fontSize: 12, color: "#5C5E68" }}>AI가 장중에 판단하면 여기에 보유종목이 표시됩니다</span>
             </div>
           )}
         </div>
