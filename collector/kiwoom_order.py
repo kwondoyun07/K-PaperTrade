@@ -244,18 +244,36 @@ def valid_since(s: str, today: datetime | None = None) -> str:
     return s
 
 
-def latest_closes(market_db: Turso | None, tickers: list[str]) -> dict[str, int]:
+def latest_closes(
+    market_db: Turso | None, tickers: list[str], db: Turso | None = None, account_id: int = 0
+) -> dict[str, int]:
     """금액 상한 검증용 기준가. 아직 체결 안 된(PENDING) 주문은 체결가가 없으므로
-    시장 DB 최신 종가를 쓴다. 없으면 order_payload가 '기준가 없음'으로 그 건만 SKIP한다."""
+    시장 DB 최신 종가를 쓴다.
+
+    daily_prices에 없는 종목(ETF 등)은 보유 매입가로 폴백한다. 그게 없으면
+    order_payload가 '기준가 없음'으로 그 건만 SKIP한다. 폴백이 없으면 ETF 보유분은
+    영원히 못 판다 — 실측: 153130(채권 ETF)이 매일 SELL 판정을 받고도 기준가가 없어
+    거부됐다(daily_prices 0행). 매입가는 상한 검증용 근사치로 충분하다.
+    """
     out: dict[str, int] = {}
-    if market_db is None:
-        return out
-    for t in set(tickers):
-        rows = market_db.query(
-            "SELECT close FROM daily_prices WHERE ticker = ? ORDER BY date DESC LIMIT 1", (t,)
-        )
-        if rows:
-            out[t] = int(rows[0]["close"])
+    want = set(tickers)
+    if market_db is not None:
+        for t in want:
+            rows = market_db.query(
+                "SELECT close FROM daily_prices WHERE ticker = ? ORDER BY date DESC LIMIT 1", (t,)
+            )
+            if rows:
+                out[t] = int(rows[0]["close"])
+    missing = want - set(out)
+    if missing and db is not None and account_id:
+        for r in db.query(
+            "SELECT ticker, avg_price FROM positions WHERE owner_type = 'ACCOUNT' AND owner_id = ?",
+            (account_id,),
+        ):
+            t = str(r["ticker"])
+            if t in missing and r["avg_price"]:
+                out[t] = int(r["avg_price"])
+                log.info("%s 기준가를 보유 매입가로 폴백: %s", t, f"{out[t]:,}")
     return out
 
 
@@ -272,7 +290,7 @@ def mirror(
         log.info("미러링 대상 없음 (account=%s, ordered_at >= %s)", account_id, since)
         return 0
 
-    refs = latest_closes(market_db, [str(r["ticker"]) for r in rows if not r["fill_price"]])
+    refs = latest_closes(market_db, [str(r["ticker"]) for r in rows if not r["fill_price"]], db, account_id)
 
     # 토큰을 루프 전에 미리 받는다. 지연 발급이면 인증·연결 장애가 건별 예외로 잡혀
     # 대상 행이 전부 'FAILED'로 마킹되고, 그 행들은 다시는 조회되지 않는다.
