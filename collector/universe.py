@@ -36,6 +36,24 @@ def watchlist(n: int = 50, listing: pd.DataFrame | None = None) -> list[str]:
     return [str(c) for c in top["Code"]]
 
 
+def etf_stocks() -> list[dict]:
+    """상장 ETF (코드·이름). FDR의 KRX 목록에는 ETF가 아예 없어서(2,873종목 중 0건)
+    이걸 따로 받아야 화면에 이름이 뜬다 — 실측: 153130이 stocks에 없어 코드로만 표시됐다.
+
+    **이름·검색용이다. 수집 유니버스(krx_stocks)에는 넣지 않는다** — ETF 1,100여 개의
+    분봉까지 받으면 키움 초당 1회 제한 때문에 수집이 20분 넘게 늘어난다.
+    """
+    try:
+        df = fdr.StockListing("ETF/KR")
+    except Exception:
+        return []  # 이름은 부가정보 — 실패해도 배치를 막지 않는다
+    return [
+        {"ticker": str(r.Symbol), "name": str(r.Name), "market": "ETF"}
+        for r in df.itertuples()
+        if str(r.Symbol).strip()
+    ]
+
+
 def krx_stocks(listing: pd.DataFrame | None = None) -> list[dict]:
     """KOSPI+KOSDAQ 전 종목 (KONEX 제외), 티커 정렬."""
     df = listing if listing is not None else krx_listing()
