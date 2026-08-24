@@ -35,7 +35,7 @@ export async function caller(req: Request): Promise<Caller> {
 // 통과면 null, 막히면 그대로 반환할 응답. 미소유는 존재를 숨기려 404로 통일한다.
 export async function guardOwner(
   c: Caller,
-  table: "accounts" | "replay_sessions", // 리터럴 유니언 — 사용자 입력 아님(주입 불가)
+  table: "accounts", // 리터럴 — 사용자 입력 아님(주입 불가)
   id: number,
 ): Promise<Response | null> {
   if (c.cron) return null;
