@@ -347,6 +347,21 @@ def mirror(
 # --- 키움 → 웹 동기화 (키움이 기준) ---------------------------------------
 
 
+# 수수료·세금 요율 — lib/engine/fill.ts의 DEFAULT_CONFIG와 같은 값을 쓴다.
+# 키움이 체결별 수수료를 따로 주지 않아(kt00018의 pur_cmsn은 포지션 누적) 여기서 계산한다.
+# 계좌 잔고 자체는 키움 실제값을 동기화하므로 정확하다 — 이 값은 **화면 표시용 추정치**다.
+COMMISSION_RATE = 0.00015  # 0.015%
+SELL_TAX_RATE = 0.0015     # 증권거래세+농특세 0.15%
+
+
+def fees(side: str, price: int, qty: int) -> tuple[int, int]:
+    """(수수료, 세금). 세금은 매도에만 붙는다. 정수 절사(엔진과 동일)."""
+    amount = price * qty
+    commission = int(amount * COMMISSION_RATE + 1e-9)
+    tax = int(amount * SELL_TAX_RATE + 1e-9) if side == "SELL" else 0
+    return commission, tax
+
+
 def _num(v: object) -> int:
     """키움 숫자 문자열('000000010000000', 콤마 포함) → 부호 없는 int."""
     s = re.sub(r"[^\d]", "", str(v or ""))
@@ -407,7 +422,7 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
 
     now = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     orders = db.query(
-        "SELECT id, ticker, qty, broker_order_id FROM orders "
+        "SELECT id, ticker, side, qty, broker_order_id FROM orders "
         "WHERE owner_type = 'ACCOUNT' AND owner_id = ? AND status = 'PENDING' AND substr(ordered_at, 1, 10) = ?",
         (account_id, today),
     )
@@ -418,9 +433,11 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
             stmts.append(("UPDATE orders SET status = 'FILLED' WHERE id = ? AND status = 'PENDING'", (oid,)))
             px = avg_by.get(str(o["ticker"]).zfill(6), 0)
             if px > 0:
+                cm, tx = fees(str(o["side"]), px, int(o["qty"]))
                 stmts.append((
-                    "INSERT INTO executions (order_id, price, qty, commission, tax, executed_at) VALUES (?, ?, ?, 0, 0, ?)",
-                    (oid, px, int(o["qty"]), now),
+                    "INSERT INTO executions (order_id, price, qty, commission, tax, executed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (oid, px, int(o["qty"]), cm, tx, now),
                 ))
         elif bid.startswith(("FAILED:", "SKIP:")):
             stmts.append((
