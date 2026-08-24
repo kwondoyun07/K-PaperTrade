@@ -309,12 +309,37 @@ pl = ko.order_payload("SELL", "153130", 6, "MARKET", None, refs["153130"])
 assert pl["stk_cd"] == "153130" and pl["ord_qty"] == "6"
 print("ETF 기준가 폴백 테스트 OK")
 
-# --- 수수료·세금 계산 (엔진 lib/engine/fill.ts와 같은 요율) ---
+# --- 수수료·세금 폴백 계산 (키움 모의계좌 실측 요율) ---
 # 키움 동기화가 executions에 0을 박아 넣어 화면에 수수료·세금이 늘 0으로 보였다.
-assert ko.fees("BUY", 100000, 10) == (150, 0), ko.fees("BUY", 100000, 10)      # 100만 × 0.015%
-assert ko.fees("SELL", 100000, 10) == (150, 1500), ko.fees("SELL", 100000, 10)  # + 0.15% 세금
+# 실거래 요율(0.015%)을 쓰면 20배 넘게 틀린다 — 모의계좌는 0.35%다.
+assert ko.fees("BUY", 100000, 10) == (3500, 0), ko.fees("BUY", 100000, 10)       # 100만 × 0.35%
+assert ko.fees("SELL", 100000, 10) == (3500, 2000), ko.fees("SELL", 100000, 10)  # + 0.2% 세금
 assert ko.fees("BUY", 1, 1) == (0, 0)          # 절사
-assert ko.fees("SELL", 1564000, 1) == (234, 2346)
+# 실측 대조: 1,564,000원 매수 수수료 5,470원 / 782,751원 매도 수수료 2,730·세금 1,563원
+assert ko.fees("BUY", 1564000, 1)[0] == 5470, ko.fees("BUY", 1564000, 1)
+cm, tx = ko.fees("SELL", 260917, 3)
+assert cm == 2730 and abs(tx - 1563) <= 5, (cm, tx)
 # 매수엔 거래세가 붙지 않는다
 assert ko.fees("BUY", 1564000, 1)[1] == 0
 print("수수료·세금 계산 테스트 OK")
+
+# --- 실제 체결내역(ka10076) 파싱 ---
+# 우리가 요율로 계산하면 크게 틀린다: 모의계좌 수수료가 실거래와 달라
+# 1,564,000원 매수에 실제 5,470원(0.35%)인데 0.015%로 계산하면 234원이다.
+FILLS = [
+    {"ord_no": "0087908", "stk_cd": "207940", "cntr_pric": "1564000", "cntr_qty": "1",
+     "tdy_trde_cmsn": "5470", "tdy_trde_tax": "0"},
+    {"ord_no": "0087904", "stk_cd": "005930", "cntr_pric": "260917", "cntr_qty": "3",
+     "tdy_trde_cmsn": "2730", "tdy_trde_tax": "1563"},
+    {"ord_no": "", "cntr_pric": "100"},        # 주문번호 없음 → 버림
+    {"ord_no": "0099999", "cntr_pric": "0"},   # 체결가 0 → 버림
+    "쓰레기",                                    # 비-dict → 버림
+]
+f = ko.parse_fills(FILLS)
+assert set(f) == {"87908", "87904"}, f          # 앞자리 0 정규화
+assert f["87904"] == {"price": 260917, "qty": 3, "commission": 2730, "tax": 1563}, f["87904"]
+assert f["87908"]["tax"] == 0, "매수엔 거래세가 없다"
+assert ko.parse_fills([]) == {}
+# 우리 broker_order_id와 키움 ord_no의 0 표기가 달라도 매칭된다
+assert ko._ordno("0087904") == ko._ordno("87904") == "87904"
+print("실제 체결내역 파싱 테스트 OK")

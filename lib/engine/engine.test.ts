@@ -154,20 +154,20 @@ describe("거부 공통", () => {
 });
 
 describe("비용 계산", () => {
-  it("수수료 0.015%·거래세 0.15% 원 단위 절사", () => {
+  it("수수료 0.35%·거래세 0.2% 원 단위 절사", () => {
     const buy = estimateCost("BUY", 10_000, 100); // 금액 1,000,000
-    expect(buy.commission).toBe(150);
+    expect(buy.commission).toBe(3_500);
     expect(buy.tax).toBe(0);
-    expect(buy.total).toBe(1_000_150);
+    expect(buy.total).toBe(1_003_500);
 
     const sell = estimateCost("SELL", 10_000, 100);
-    expect(sell.commission).toBe(150);
-    expect(sell.tax).toBe(1_500);
-    expect(sell.total).toBe(998_350);
+    expect(sell.commission).toBe(3_500);
+    expect(sell.tax).toBe(2_000);
+    expect(sell.total).toBe(994_500);
   });
 
   it("부동소수 경계에서 1원 오차 없음", () => {
-    // 820,000 × 0.00015 = 123 — 부동소수로 122.999…가 되어도 123이어야 함
-    expect(estimateCost("BUY", 8_200, 100).commission).toBe(123);
+    // 820,000 × 0.0035 = 2,870 — 부동소수로 2,869.99…가 되어도 2,870이어야 함
+    expect(estimateCost("BUY", 8_200, 100).commission).toBe(2_870);
   });
 });
