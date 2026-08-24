@@ -12,8 +12,10 @@ import { priceLimits, roundDownToTick, roundUpToTick, validateLimitPrice } from 
 
 export const DEFAULT_CONFIG: EngineConfig = {
   slippageBp: 5,
-  commissionRate: 0.00015, // 수수료 0.015%
-  sellTaxRate: 0.0015, // 증권거래세+농특세 0.15% (2026-08 기준, env로 조정)
+  // 키움 모의계좌 실측 요율. 실거래(0.015%)보다 20배 넘게 비싸다 — 낮게 잡으면
+  // 주문 접수 시 현금 검증이 느슨해져 키움이 거부할 주문을 통과시킨다.
+  commissionRate: 0.0035, // 수수료 0.35% (실측 5,470/1,564,000)
+  sellTaxRate: 0.002, // 증권거래세 0.05% + 농특세 0.15%
 };
 
 // 부동소수 오차로 정수 경계에서 1원 어긋나는 것 방지 (예: rate*amount = 122.999…97)

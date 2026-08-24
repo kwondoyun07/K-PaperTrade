@@ -55,6 +55,7 @@ TR_SELL = "kt10001"
 TR_ACCOUNTS = "ka00001"
 TR_DEPOSIT = "kt00001"  # 예수금상세현황
 TR_BALANCE = "kt00018"  # 계좌평가잔고내역(보유종목)
+TR_FILLS = "ka10076"    # 체결요청 — 당일 실제 체결가·수수료·세금
 EXCHANGE = "KRX"  # 모의투자는 NXT 미지원
 
 # 미러링 상한 — 버그가 나도 손실 규모가 유한하도록 강제한다.
@@ -172,6 +173,11 @@ class KiwoomOrderClient:
     def balance(self) -> dict:
         """kt00018 계좌평가잔고내역 — acnt_evlt_remn_indv_tot(보유종목)."""
         return self._post(ACNT_PATH, TR_BALANCE, {"qry_tp": "1", "dmst_stex_tp": EXCHANGE})
+
+    def fills(self) -> list[dict]:
+        """ka10076 체결요청 — **당일** 체결 내역. 실제 체결가(cntr_pric)와 실제
+        수수료·세금(tdy_trde_cmsn/tdy_trde_tax)이 들어 있다. 과거일은 조회되지 않는다."""
+        return self._post(ACNT_PATH, TR_FILLS, {"qry_tp": "0", "sell_tp": "0", "stex_tp": "1"}).get("cntr") or []
 
     def place(self, side: str, payload: dict) -> str:
         j = self._post(ORDER_PATH, tr_for(side), payload)
@@ -347,17 +353,17 @@ def mirror(
 # --- 키움 → 웹 동기화 (키움이 기준) ---------------------------------------
 
 
-# 수수료·세금 요율 — lib/engine/fill.ts의 DEFAULT_CONFIG와 같은 값을 쓴다.
-# 키움이 체결별 수수료를 따로 주지 않아(kt00018의 pur_cmsn은 포지션 누적) 여기서 계산한다.
-# 계좌 잔고 자체는 키움 실제값을 동기화하므로 정확하다 — 이 값은 **화면 표시용 추정치**다.
-COMMISSION_RATE = 0.00015  # 0.015%
-SELL_TAX_RATE = 0.0015     # 증권거래세+농특세 0.15%
+# 수수료·세금 요율 — **키움 모의계좌 실측값**이다. 실거래 요율(0.015%)을 쓰면 안 된다:
+# 모의계좌는 수수료가 0.35%로 20배 넘게 비싸다(1,564,000원 매수에 실제 5,470원).
+# 실체결(ka10076/ka10170)이 있으면 그쪽이 우선이고, 이 값은 조회 실패 시 폴백이다.
+COMMISSION_RATE = 0.0035  # 0.35% — 모의계좌 실측(5470/1564000, 2730/782751)
+SELL_TAX_RATE = 0.002     # 0.2% — 증권거래세 0.05% + 농특세 0.15%(실측 1563/782751)
 
 
 def fees(side: str, price: int, qty: int) -> tuple[int, int]:
     """(수수료, 세금). 세금은 매도에만 붙는다. 정수 절사(엔진과 동일)."""
     amount = price * qty
-    commission = int(amount * COMMISSION_RATE + 1e-9)
+    commission = int(amount * COMMISSION_RATE + 1e-9) // 10 * 10  # 키움은 10원 단위 절사
     tax = int(amount * SELL_TAX_RATE + 1e-9) if side == "SELL" else 0
     return commission, tax
 
@@ -373,6 +379,33 @@ def _snum(v: object) -> int:
     s = str(v or "").strip()
     n = _num(s)
     return -n if s.startswith("-") else n
+
+
+def _ordno(v: object) -> str:
+    """주문번호 정규화 — 우리 broker_order_id와 키움 ord_no의 앞자리 0 표기가 다를 수 있다."""
+    return str(v or "").strip().lstrip("0")
+
+
+def parse_fills(rows: list) -> dict[str, dict]:
+    """ka10076 체결 목록 → {주문번호: {price, qty, commission, tax}}. 순수 함수.
+
+    키움이 주는 **실제** 값이다. 우리가 요율로 계산하면 크게 어긋난다 — 모의계좌
+    수수료율이 실거래와 달라서(실측 2026-08-24: 1,564,000원 매수에 수수료 5,470원
+    = 0.35%, 0.015%로 계산하면 234원) 20배 넘게 틀린다.
+    """
+    out: dict[str, dict] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        no, px = _ordno(r.get("ord_no")), _num(r.get("cntr_pric"))
+        if no and px:
+            out[no] = {
+                "price": px,
+                "qty": _num(r.get("cntr_qty")),
+                "commission": _num(r.get("tdy_trde_cmsn")),
+                "tax": _num(r.get("tdy_trde_tax")),
+            }
+    return out
 
 
 def parse_positions(balance_json: dict) -> list[dict]:
@@ -405,6 +438,12 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
     # 예수금)가 매수·매도가 반영된 실제 현금이다. 없으면 entr로 폴백.
     dep = client.deposit()
     bal = client.balance()
+    # 당일 실제 체결가·수수료·세금. 실패해도 동기화는 계속한다(계산 폴백).
+    try:
+        fills = parse_fills(client.fills())
+    except Exception as e:
+        log.warning("체결내역 조회 실패(%s) — 체결가·수수료는 추정치로 기록", str(e)[:80])
+        fills = {}
     cash = _num(dep.get("d2_entra") or dep.get("entr"))
     est_asset = _num(bal.get("prsm_dpst_aset_amt")) or None  # 추정예탁자산(총자산, 제비용 반영)
     positions = parse_positions(bal)
@@ -421,9 +460,14 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
         ))
 
     now = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    # PENDING뿐 아니라 **체결기록이 빠진 FILLED**도 다시 집는다. 전량 매도하면 보유가
+    # 사라져 예전 코드가 체결가를 못 구하고 executions를 건너뛴 채 FILLED로 확정해버려,
+    # 다시는 복구되지 않았다(주문은 체결됐는데 체결내역·수수료가 화면에 없음).
     orders = db.query(
-        "SELECT id, ticker, side, qty, broker_order_id FROM orders "
-        "WHERE owner_type = 'ACCOUNT' AND owner_id = ? AND status = 'PENDING' AND substr(ordered_at, 1, 10) = ?",
+        "SELECT id, ticker, side, qty, broker_order_id FROM orders o "
+        "WHERE owner_type = 'ACCOUNT' AND owner_id = ? AND substr(ordered_at, 1, 10) = ? "
+        "AND (status = 'PENDING' OR (status = 'FILLED' "
+        "     AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.order_id = o.id)))",
         (account_id, today),
     )
     for o in orders:
@@ -431,14 +475,24 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
         oid = int(o["id"])
         if bid and not bid.startswith(("FAILED:", "SKIP:", "SENDING:")):
             stmts.append(("UPDATE orders SET status = 'FILLED' WHERE id = ? AND status = 'PENDING'", (oid,)))
-            px = avg_by.get(str(o["ticker"]).zfill(6), 0)
+            # 키움이 준 **실제** 체결가·수수료·세금을 우선 쓴다. 없으면(과거일 주문 등)
+            # 보유 매입가 + 요율 계산으로 폴백 — 근사치라 화면 표기가 어긋날 수 있다.
+            f = fills.get(_ordno(bid))
+            if f:
+                px, cm, tx = f["price"], f["commission"], f["tax"]
+            else:
+                px = avg_by.get(str(o["ticker"]).zfill(6), 0)
+                cm, tx = fees(str(o["side"]), px, int(o["qty"])) if px > 0 else (0, 0)
             if px > 0:
-                cm, tx = fees(str(o["side"]), px, int(o["qty"]))
+                # 재실행·동시실행에서 같은 주문이 두 번 쌓이지 않게 NOT EXISTS로 막는다.
                 stmts.append((
                     "INSERT INTO executions (order_id, price, qty, commission, tax, executed_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (oid, px, int(o["qty"]), cm, tx, now),
+                    "SELECT ?, ?, ?, ?, ?, ? "
+                    "WHERE NOT EXISTS (SELECT 1 FROM executions WHERE order_id = ?)",
+                    (oid, px, int(o["qty"]), cm, tx, now, oid),
                 ))
+            else:
+                log.warning("주문 #%s 체결가 미상 — 체결내역을 기록하지 못했다", oid)
         elif bid.startswith(("FAILED:", "SKIP:")):
             stmts.append((
                 "UPDATE orders SET status = 'REJECTED', reject_reason = ? WHERE id = ? AND status = 'PENDING'",
