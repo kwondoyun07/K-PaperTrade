@@ -1,25 +1,26 @@
-// 주문·체결·잔고 DB 레이어 — 라이브 계좌(ACCOUNT) 기준. Owner 유니언에 REPLAY가
-// 남은 건 제거된 리플레이 기능의 잔재다. 머니 경로를 건드리는 리팩터링이라 그대로 뒀다.
-// owner_type/owner_id로 동일 테이블·동일 체결 엔진을 공유한다. 서버 전용.
+// 주문·체결·잔고 DB 레이어 — 라이브 계좌(ACCOUNT) 전용. 서버 전용.
+//
+// 체결은 **키움이 한다**. 웹이 네이버 분봉으로 자체 체결하던 경로(settleOwnerOrders)는
+// 제거했다 — 웹이 먼저 FILLED로 확정하면 키움 동기화가 PENDING만 보므로 손대지 못해,
+// 실제와 무관한 체결가가 영구히 남았다.
 import { tradingDb } from "@/lib/db";
 import { getMinuteBars, latestClose, prevDayClose } from "@/lib/minutes";
-import { cutBars, settlePending } from "@/lib/engine/settle";
+import { cutBars } from "@/lib/engine/settle";
 import { estimateCost } from "@/lib/engine/fill";
 import { priceLimits, validateLimitPrice } from "@/lib/engine/rules";
 import type { OrderReq, Side } from "@/lib/engine/types";
 
-export type Owner = { type: "ACCOUNT" | "REPLAY"; id: number };
+export type Owner = { type: "ACCOUNT"; id: number };
 
 const nowKst = () =>
   new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 16).replace("T", " ");
 
 async function ownerCash(owner: Owner): Promise<number> {
-  const table = owner.type === "ACCOUNT" ? "accounts" : "replay_sessions";
   const rs = await tradingDb().execute({
-    sql: `SELECT cash FROM ${table} WHERE id = ?`,
+    sql: "SELECT cash FROM accounts WHERE id = ?",
     args: [owner.id],
   });
-  if (!rs.rows.length) throw new Error("계좌/세션 없음");
+  if (!rs.rows.length) throw new Error("계좌 없음");
   return Number(rs.rows[0].cash);
 }
 
@@ -32,14 +33,14 @@ export async function getPositions(owner: Owner) {
     ticker: String(r.ticker),
     qty: Number(r.qty),
     avgPrice: Number(r.avg_price),
-    // 키움 동기화된 평가손익(수수료·세금 반영). null이면 계산 폴백(REPLAY·미동기화).
+    // 키움 동기화된 평가손익(수수료·세금 반영). null이면 계산 폴백(미동기화).
     kiwoomPnl: r.pnl == null ? null : Number(r.pnl),
   }));
 }
 
 /**
  * 주문 접수. 접수 시점 검증(호가단위·가격제한폭·잔고·현금)에서 걸리면 REJECTED로
- * 기록하고, 통과하면 PENDING 저장. 체결은 settleOwnerOrders()가 다음 분봉에서 처리.
+ * 기록하고, 통과하면 PENDING 저장. 체결·확정은 키움 미러링(collector/kiwoom_order.py)이 한다.
  */
 export async function placeOrder(
   owner: Owner,
@@ -96,132 +97,8 @@ async function refPrice(ticker: string, orderedAt: string): Promise<number | nul
   return latestClose(ticker);
 }
 
-export type SettleResult = {
-  orderId: number;
-  ticker: string;
-  side: Side;
-  status: "FILLED" | "REJECTED";
-  reason?: string;
-  price?: number;
-  qty?: number;
-  ts?: string; // 체결 분봉 시각
-};
-
-/**
- * PENDING 주문 정산. cursor를 주면 그 이전 분봉만 사용한다.
- * 라이브는 cursor 없이 현재까지 쌓인 분봉으로 정산한다.
- */
-export async function settleOwnerOrders(owner: Owner, cursor?: string): Promise<SettleResult[]> {
-  const db = tradingDb();
-  const pending = await db.execute({
-    sql: "SELECT id, ticker, side, order_type, qty, limit_price, ordered_at FROM orders WHERE owner_type = ? AND owner_id = ? AND status = 'PENDING' ORDER BY id",
-    args: [owner.type, owner.id],
-  });
-  const results: SettleResult[] = [];
-  const cashTable = owner.type === "ACCOUNT" ? "accounts" : "replay_sessions";
-
-  for (const row of pending.rows) {
-    const ticker = String(row.ticker);
-    const orderedAt = String(row.ordered_at);
-    const date = orderedAt.slice(0, 10);
-    const order: OrderReq = {
-      side: String(row.side) as Side,
-      type: String(row.order_type) as OrderReq["type"],
-      qty: Number(row.qty),
-      limitPrice: row.limit_price == null ? undefined : Number(row.limit_price),
-    };
-    let bars = await getMinuteBars(ticker, date);
-    if (cursor) bars = cutBars(bars, cursor);
-    const pdc = (await prevDayClose(ticker, date)) ?? bars[0]?.open;
-    if (!bars.length || pdc == null) continue;
-
-    const r = settlePending(order, orderedAt, bars, pdc);
-    if (r.status === "PENDING") continue;
-
-    // 상태 가드가 핵심이다. 장중 폴링(/quotes)과 배치 정산(/cron/settle)이 같은
-    // PENDING 주문을 동시에 집을 수 있는데, 가드가 없으면 둘 다 체결시켜
-    // executions가 두 번 쌓이고 현금이 두 번 빠진다. rowsAffected로 선점을 확인한다.
-    if (r.status === "REJECTED") {
-      const upd = await db.execute({
-        sql: "UPDATE orders SET status = 'REJECTED', reject_reason = ? WHERE id = ? AND status = 'PENDING'",
-        args: [r.reason, Number(row.id)],
-      });
-      if (upd.rowsAffected === 0) continue; // 다른 경로가 이미 확정했다
-      results.push({ orderId: Number(row.id), ticker, side: order.side, status: "REJECTED", reason: r.reason });
-      continue;
-    }
-
-    const { price, qty, commission, tax, ts } = r.fill;
-    const amount = price * qty;
-    const cash = await ownerCash(owner);
-    if (order.side === "BUY" && amount + commission > cash) {
-      const upd = await db.execute({
-        sql: "UPDATE orders SET status = 'REJECTED', reject_reason = '현금부족' WHERE id = ? AND status = 'PENDING'",
-        args: [Number(row.id)],
-      });
-      if (upd.rowsAffected === 0) continue;
-      results.push({ orderId: Number(row.id), ticker, side: order.side, status: "REJECTED", reason: "현금부족" });
-      continue;
-    }
-
-    const stmts = [
-      {
-        sql: "INSERT INTO executions (order_id, price, qty, commission, tax, executed_at) VALUES (?, ?, ?, ?, ?, ?)",
-        args: [Number(row.id), price, qty, commission, tax, ts],
-      },
-    ];
-    if (order.side === "BUY") {
-      stmts.push(
-        {
-          sql:
-            "INSERT INTO positions (owner_type, owner_id, ticker, qty, avg_price) VALUES (?, ?, ?, ?, ?) " +
-            "ON CONFLICT(owner_type, owner_id, ticker) DO UPDATE SET " +
-            "avg_price = CAST(ROUND((positions.avg_price * positions.qty + excluded.avg_price * excluded.qty) * 1.0 / (positions.qty + excluded.qty)) AS INTEGER), " +
-            "qty = positions.qty + excluded.qty",
-          args: [owner.type, owner.id, ticker, qty, price],
-        },
-        {
-          sql: `UPDATE ${cashTable} SET cash = cash - ? WHERE id = ?`,
-          args: [amount + commission, owner.id],
-        },
-      );
-    } else {
-      stmts.push(
-        {
-          sql: "UPDATE positions SET qty = qty - ? WHERE owner_type = ? AND owner_id = ? AND ticker = ?",
-          args: [qty, owner.type, owner.id, ticker],
-        },
-        {
-          sql: `UPDATE ${cashTable} SET cash = cash + ? WHERE id = ?`,
-          args: [amount - commission - tax, owner.id],
-        },
-      );
-    }
-    // 선점(PENDING→FILLED)과 부수효과를 한 트랜잭션에 묶는다. 선점에 실패하면
-    // 다른 경로가 이미 처리한 주문이므로 아무것도 반영하지 않고 롤백한다.
-    const tx = await db.transaction("write");
-    try {
-      const claim = await tx.execute({
-        sql: "UPDATE orders SET status = 'FILLED' WHERE id = ? AND status = 'PENDING'",
-        args: [Number(row.id)],
-      });
-      if (claim.rowsAffected === 0) {
-        await tx.rollback();
-        continue;
-      }
-      for (const s of stmts) await tx.execute(s);
-      await tx.commit();
-    } catch (e) {
-      await tx.rollback().catch(() => {});
-      throw e;
-    }
-    results.push({ orderId: Number(row.id), ticker, side: order.side, status: "FILLED", price, qty, ts });
-  }
-  return results;
-}
-
 /** 포트폴리오 평가. ACCOUNT는 키움이 기준 — 키움이 동기화한 평가손익·추정예탁자산을
- *  그대로 쓴다(수수료·세금·예상 매도제비용 반영). 없으면(REPLAY·미동기화) 계산 폴백. */
+ *  그대로 쓴다(수수료·세금·예상 매도제비용 반영). 없으면(미동기화) 계산 폴백. */
 export async function getPortfolio(owner: Owner) {
   const cash = await ownerCash(owner);
   const positions = await getPositions(owner);
@@ -243,7 +120,7 @@ export async function getPortfolio(owner: Owner) {
   );
   const positionsValue = valued.reduce((s, p) => s + p.value, 0);
   // 키움 추정예탁자산이 있으면 총자산으로 쓴다(예상 매도제비용까지 반영해 S#와 일치).
-  const est = owner.type === "ACCOUNT" ? await accountEstAsset(owner.id) : null;
+  const est = await accountEstAsset(owner.id);
   return { cash, positions: valued, equity: est ?? cash + positionsValue };
 }
 

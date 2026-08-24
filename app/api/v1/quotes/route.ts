@@ -1,10 +1,9 @@
 // 장중 폴링 프록시 — 화면에서 보고 있는 종목만(최대 10개), 클라이언트 60초 간격.
-// 받은 분봉은 Turso 롤링 캐시에 upsert하고, 해당 종목 라이브 PENDING 주문을 정산한다.
+// 받은 분봉은 Turso 롤링 캐시에 upsert한다. 체결은 키움이 하므로 여기서 정산하지 않는다.
 import { NextResponse } from "next/server";
 import { fetchMinuteBars } from "@/lib/providers/naver";
-import { marketDb, tradingDb } from "@/lib/db";
+import { marketDb } from "@/lib/db";
 import { prevDayClose } from "@/lib/minutes";
-import { settleOwnerOrders } from "@/lib/trading";
 import { jerr, qs, todayKst } from "@/lib/api";
 
 const UPSERT =
@@ -34,14 +33,6 @@ export async function GET(req: Request) {
         })),
         "write",
       );
-      // 이 종목에 PENDING 주문이 있는 라이브 계좌 정산
-      const owners = await tradingDb().execute({
-        sql: "SELECT DISTINCT owner_id FROM orders WHERE owner_type = 'ACCOUNT' AND status = 'PENDING' AND ticker = ?",
-        args: [ticker],
-      });
-      for (const o of owners.rows) {
-        await settleOwnerOrders({ type: "ACCOUNT", id: Number(o.owner_id) });
-      }
       const last = bars[bars.length - 1];
       const pdc = await prevDayClose(ticker, date);
       quotes.push({
