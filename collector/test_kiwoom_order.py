@@ -264,9 +264,9 @@ class SyncDb:
 
 
 ORDERS = [
-    {"id": 5, "ticker": "005930", "qty": 3, "broker_order_id": "0001234"},   # 키움 접수 → FILLED
-    {"id": 6, "ticker": "999999", "qty": 1, "broker_order_id": "FAILED:x"},  # 미전송 → REJECTED
-    {"id": 7, "ticker": "000660", "qty": 2, "broker_order_id": ""},          # 미전송 → PENDING 유지
+    {"id": 5, "ticker": "005930", "side": "BUY", "qty": 3, "broker_order_id": "0001234"},   # 키움 접수 → FILLED
+    {"id": 6, "ticker": "999999", "side": "BUY", "qty": 1, "broker_order_id": "FAILED:x"},  # 미전송 → REJECTED
+    {"id": 7, "ticker": "000660", "side": "SELL", "qty": 2, "broker_order_id": ""},         # 미전송 → PENDING 유지
 ]
 sdb = SyncDb(ORDERS)
 ko.sync_from_kiwoom(sdb, SyncClient(), 1, "2026-08-05")
@@ -308,3 +308,13 @@ assert ko.latest_closes(MDbHas(), ["153130"], PosDb(), 1) == {"153130": 120000}
 pl = ko.order_payload("SELL", "153130", 6, "MARKET", None, refs["153130"])
 assert pl["stk_cd"] == "153130" and pl["ord_qty"] == "6"
 print("ETF 기준가 폴백 테스트 OK")
+
+# --- 수수료·세금 계산 (엔진 lib/engine/fill.ts와 같은 요율) ---
+# 키움 동기화가 executions에 0을 박아 넣어 화면에 수수료·세금이 늘 0으로 보였다.
+assert ko.fees("BUY", 100000, 10) == (150, 0), ko.fees("BUY", 100000, 10)      # 100만 × 0.015%
+assert ko.fees("SELL", 100000, 10) == (150, 1500), ko.fees("SELL", 100000, 10)  # + 0.15% 세금
+assert ko.fees("BUY", 1, 1) == (0, 0)          # 절사
+assert ko.fees("SELL", 1564000, 1) == (234, 2346)
+# 매수엔 거래세가 붙지 않는다
+assert ko.fees("BUY", 1564000, 1)[1] == 0
+print("수수료·세금 계산 테스트 OK")

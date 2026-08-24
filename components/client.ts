@@ -20,9 +20,14 @@ export type StockRow = { ticker: string; name: string; market: string };
 // 코드→이름 맵을 세션당 1회 로드해 공유한다. 이름은 부가정보라 실패해도 코드로 폴백.
 let namesPromise: Promise<Record<string, string>> | null = null;
 export function fetchStockNames(): Promise<Record<string, string>> {
+  // 성공한 결과만 캐시한다. 실패까지 캐시하면(배포 중이거나 네트워크가 한 번 튀면)
+  // 그 세션 내내 빈 맵을 재사용해 종목명이 영영 코드로만 보인다 — 새로고침 전까지.
   namesPromise ??= j<{ names: Record<string, string> }>("/api/v1/stocks/names")
     .then((r) => r.names)
-    .catch(() => ({}));
+    .catch(() => {
+      namesPromise = null; // 다음 호출에서 다시 시도
+      return {};
+    });
   return namesPromise;
 }
 export type PositionRow = {
