@@ -243,8 +243,13 @@ def upsert_indices(db: Turso, start: str, end: str | None = None) -> int:
 
 
 def snapshot_accounts(tdb: Turso, close_map: dict[str, int], date: str) -> None:
-    """계좌별 평가액(현금+보유×당일 종가)을 portfolio_snapshots에 upsert (ts = date 15:30)."""
-    accounts = tdb.query("SELECT id, cash FROM accounts")
+    """계좌별 평가액을 portfolio_snapshots에 upsert (ts = date 15:30).
+
+    총자산은 키움 추정예탁자산(est_asset)을 우선 쓴다 — ETF는 일봉을 수집하지 않아
+    close_map에 없고, 그러면 매입가로 굳어 시세 변동이 곡선에 안 잡힌다(153130은
+    포트의 25%였다). 없으면 현금+보유×당일 종가로 계산 폴백.
+    """
+    accounts = tdb.query("SELECT id, cash, est_asset FROM accounts")
     positions = tdb.query(
         "SELECT owner_id, ticker, qty, avg_price FROM positions WHERE owner_type = 'ACCOUNT' AND qty > 0"
     )
@@ -259,12 +264,13 @@ def snapshot_accounts(tdb: Turso, close_map: dict[str, int], date: str) -> None:
             int(p["qty"]) * int(close_map.get(str(p["ticker"]), p["avg_price"]))
             for p in by_acct.get(aid, [])
         )
+        equity = int(a["est_asset"]) if a["est_asset"] else int(a["cash"]) + value
         stmts.append(
             (
                 "INSERT INTO portfolio_snapshots (owner_type, owner_id, ts, equity, cash) "
                 "VALUES ('ACCOUNT', ?, ?, ?, ?) "
                 "ON CONFLICT(owner_type, owner_id, ts) DO UPDATE SET equity=excluded.equity, cash=excluded.cash",
-                (aid, ts, int(a["cash"]) + value, int(a["cash"])),
+                (aid, ts, equity, int(a["cash"])),
             )
         )
     if stmts:
@@ -283,9 +289,8 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
     사므로 이미 오른 종가가 진입가가 돼 BUY에만 핸디캡이 실린다(실측 3.91pp 역전).
     ret_basis='close' 행은 소급 복구가 불가능하니 분석에서 걸러 써야 한다.
 
-    체결가(executions.price)는 일부러 안 쓴다 — 키움 미러링이 넣는 값은 그날 체결가가
-    아니라 포지션의 평균매입가(kiwoom_order.sync_from_kiwoom의 avg_by)라, 며칠에 걸쳐
-    쌓은 포지션이면 판단 시점 가격이 아니고 SELL 판단엔 아예 의미가 없다.
+    체결가(executions.price)는 일부러 안 쓴다 — 실제 체결가가 맞지만 주문이 난 판단에만
+    있어서, HOLD와 SELL은 기준가가 없어진다. 판단 시점 가격이어야 셋을 같은 자로 잰다.
     """
     from bisect import bisect_left
 
