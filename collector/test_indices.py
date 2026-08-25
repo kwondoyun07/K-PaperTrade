@@ -154,4 +154,41 @@ finally:
     decide.api_get = _get
 
 
+# --- 자산 스냅샷: 키움 추정예탁자산 우선 ---
+# 8/5 스냅샷이 매수대금을 차감하지 않은 채 보유를 계상해 총자산을 1,822,090원
+# 부풀렸고, 누적수익률이 -13.97%로 표시됐다(실제 +1.6%). ETF는 일봉이 없어
+# 매입가로 굳는 문제도 겹쳤다 — 둘 다 키움 총자산을 쓰면 사라진다.
+from daily import snapshot_accounts
+
+
+class FakeDb:
+    def __init__(self, accounts):
+        self.accounts, self.batch = accounts, []
+
+    def query(self, sql, args=()):
+        if "FROM accounts" in sql:
+            return self.accounts
+        return [{"owner_id": 1, "ticker": "153130", "qty": 22, "avg_price": 113360}]
+
+    def execute_batch(self, stmts):
+        self.batch = stmts
+
+
+db = FakeDb([{"id": 1, "cash": 6084154, "est_asset": 10151833}])
+snapshot_accounts(db, {}, "2026-08-25")
+(sql, args) = db.batch[0]
+assert args == (1, "2026-08-25 15:30", 10151833, 6084154), args  # 매입가 폴백이 아니라 키움 총자산
+
+# est_asset이 없으면(미동기화) 현금+보유×종가로 계산 폴백
+db = FakeDb([{"id": 1, "cash": 6084154, "est_asset": None}])
+snapshot_accounts(db, {"153130": 113245}, "2026-08-25")
+assert db.batch[0][1][2] == 6084154 + 22 * 113245, db.batch[0][1]
+
+# 종가도 없으면 매입가 폴백(곡선이 끊기는 것보단 낫다)
+db = FakeDb([{"id": 1, "cash": 6084154, "est_asset": None}])
+snapshot_accounts(db, {}, "2026-08-25")
+assert db.batch[0][1][2] == 6084154 + 22 * 113360, db.batch[0][1]
+print("자산 스냅샷 테스트 OK")
+
+
 print("test_indices OK")
