@@ -55,6 +55,7 @@ export type OrderRow = {
   commission: number | null;
   tax: number | null;
   executed_at: string | null;
+  reason: string | null; // 이 주문을 낸 AI 판단 근거
 };
 
 /** 최근 거래일 분봉 탐색 — 오늘부터 최대 lookback일 거슬러 올라가며 첫 데이터 반환 */
