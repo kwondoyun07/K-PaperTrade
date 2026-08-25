@@ -1,7 +1,7 @@
 "use client";
 
 // 주문·체결 내역 — 거부 사유 뱃지 포함
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { DOWN, UP, won } from "@/lib/format";
 import { fetchStockNames, j, type OrderRow } from "./client";
 
@@ -22,6 +22,13 @@ function StatusBadge({ status, reason }: { status: string; reason: string | null
     return <span style={{ ...style, color: UP, background: "rgba(240,68,82,0.12)" }}>거부 · {reason ?? "?"}</span>;
   if (status === "CANCELLED") return <span style={{ ...style, color: "#8B8D98", background: "#1C1C22" }}>취소</span>;
   return <span style={{ ...style, color: "#E8C55A", background: "rgba(232,197,90,0.12)" }}>대기</span>;
+}
+
+// 근거는 "[opus=BUY sonnet=HOLD ... →SELL 3/3응답] 실제 사유" 형태다.
+// 앞 대괄호(모델별 표)와 뒤 산문을 나눠 표를 흐리게, 사유를 또렷하게 보여준다.
+function splitReason(reason: string): { votes: string | null; text: string } {
+  const m = /^\[([^\]]*)\]\s*(.*)$/s.exec(reason);
+  return m ? { votes: m[1], text: m[2] } : { votes: null, text: reason };
 }
 
 export default function Orders({ accountId, active }: { accountId: number | null; active: boolean }) {
@@ -57,7 +64,8 @@ export default function Orders({ accountId, active }: { accountId: number | null
             </thead>
             <tbody>
               {orders.map((o) => (
-                <tr key={o.id}>
+                <React.Fragment key={o.id}>
+                <tr>
                   <td style={{ ...td, textAlign: "left", color: "#8B8D98", fontSize: 12 }}>{o.ordered_at}</td>
                   <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>
                     {names[o.ticker] ?? o.ticker}
@@ -77,6 +85,24 @@ export default function Orders({ accountId, active }: { accountId: number | null
                     <StatusBadge status={o.status} reason={o.reject_reason} />
                   </td>
                 </tr>
+                {o.reason ? (
+                  <tr>
+                    <td colSpan={9} style={{ padding: "0 0 10px", borderBottom: "1px solid #1A1A20", fontSize: 12, lineHeight: 1.55 }}>
+                      {(() => {
+                        const { votes, text } = splitReason(o.reason!);
+                        return (
+                          <>
+                            {votes ? (
+                              <span style={{ color: "#5C5E68", fontSize: 11, marginRight: 8, whiteSpace: "nowrap" }}>{votes}</span>
+                            ) : null}
+                            <span style={{ color: "#B7B9C2" }}>{text}</span>
+                          </>
+                        );
+                      })()}
+                    </td>
+                  </tr>
+                ) : null}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
