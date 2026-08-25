@@ -3,8 +3,12 @@
 // 주문 패널 — 종목 상세에서 사용. 제출은 부모가 처리.
 import { useState } from "react";
 import { DOWN, UP, won } from "@/lib/format";
-import { estimateCost } from "@/lib/engine/fill";
+import { DEFAULT_CONFIG, estimateCost } from "@/lib/engine/fill";
 import { seg } from "@/lib/ui";
+
+// 요율 라벨은 엔진 상수에서 만든다. 손으로 적어두면 요율을 고쳐도 화면이 옛 숫자를
+// 계속 보여준다 — 실제로 0.015%로 굳어 있었다(모의계좌 실제 요율은 0.35%).
+const rate = (r: number) => `${+(r * 100).toFixed(3)}%`;
 
 export type OrderReqUi = {
   side: "BUY" | "SELL";
@@ -85,11 +89,11 @@ export default function OrderPanel({
           <span>{won(est.amount)}</span>
         </div>
         <div style={rowStyle}>
-          <span style={{ color: "#8B8D98" }}>수수료 (0.015%)</span>
+          <span style={{ color: "#8B8D98" }}>수수료 ({rate(DEFAULT_CONFIG.commissionRate)})</span>
           <span>{won(est.commission)}</span>
         </div>
         <div style={rowStyle}>
-          <span style={{ color: "#8B8D98" }}>거래세 (0.15%)</span>
+          <span style={{ color: "#8B8D98" }}>거래세 ({rate(DEFAULT_CONFIG.sellTaxRate)})</span>
           <span>{side === "SELL" ? won(est.tax) : "—"}</span>
         </div>
         <div style={{ height: 1, background: "#26262E", margin: "2px 0" }} />

@@ -2,7 +2,7 @@
 
 // 주문·체결 내역 — 거부 사유 뱃지 포함
 import React, { useEffect, useState } from "react";
-import { DOWN, UP, won } from "@/lib/format";
+import { clr, DOWN, sgnWon, splitReason, UP, won } from "@/lib/format";
 import { fetchStockNames, j, type OrderRow } from "./client";
 
 const th: React.CSSProperties = {
@@ -22,13 +22,6 @@ function StatusBadge({ status, reason }: { status: string; reason: string | null
     return <span style={{ ...style, color: UP, background: "rgba(240,68,82,0.12)" }}>거부 · {reason ?? "?"}</span>;
   if (status === "CANCELLED") return <span style={{ ...style, color: "#8B8D98", background: "#1C1C22" }}>취소</span>;
   return <span style={{ ...style, color: "#E8C55A", background: "rgba(232,197,90,0.12)" }}>대기</span>;
-}
-
-// 근거는 "[opus=BUY sonnet=HOLD ... →SELL 3/3응답] 실제 사유" 형태다.
-// 앞 대괄호(모델별 표)와 뒤 산문을 나눠 표를 흐리게, 사유를 또렷하게 보여준다.
-function splitReason(reason: string): { votes: string | null; text: string } {
-  const m = /^\[([^\]]*)\]\s*(.*)$/s.exec(reason);
-  return m ? { votes: m[1], text: m[2] } : { votes: null, text: reason };
 }
 
 export default function Orders({ accountId, active }: { accountId: number | null; active: boolean }) {
@@ -59,6 +52,7 @@ export default function Orders({ accountId, active }: { accountId: number | null
                 <th style={th}>지정가</th>
                 <th style={th}>체결가</th>
                 <th style={th}>수수료+세금</th>
+                <th style={th} title="매수 수수료까지 반영한 실현손익 (매도만)">실현손익</th>
                 <th style={{ ...th, textAlign: "center" }}>상태</th>
               </tr>
             </thead>
@@ -81,13 +75,16 @@ export default function Orders({ accountId, active }: { accountId: number | null
                   <td style={{ ...td, color: "#B7B9C2" }}>
                     {o.commission != null ? won((o.commission ?? 0) + (o.tax ?? 0)) : "—"}
                   </td>
+                  <td style={{ ...td, color: o.realized == null ? "#5C5E68" : clr(o.realized), fontWeight: 600 }}>
+                    {o.realized == null ? "—" : sgnWon(o.realized)}
+                  </td>
                   <td style={{ ...td, textAlign: "center" }}>
                     <StatusBadge status={o.status} reason={o.reject_reason} />
                   </td>
                 </tr>
                 {o.reason ? (
                   <tr>
-                    <td colSpan={9} style={{ padding: "0 0 10px", borderBottom: "1px solid #1A1A20", fontSize: 12, lineHeight: 1.55 }}>
+                    <td colSpan={10} style={{ padding: "0 0 10px", borderBottom: "1px solid #1A1A20", fontSize: 12, lineHeight: 1.55 }}>
                       {(() => {
                         const { votes, text } = splitReason(o.reason!);
                         return (
