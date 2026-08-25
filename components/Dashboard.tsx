@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clr, DOWN, NEUTRAL, pct, sgnWon, UP, won } from "@/lib/format";
 import { setupCanvas } from "@/lib/ui";
-import { j, type OrderRow, type Portfolio } from "./client";
+import { fetchStockNames, j, type OrderRow, type Portfolio } from "./client";
 
 type Account = { id: number; name: string; initial_cash: number };
 type Snapshot = { ts: string; equity: number };
@@ -93,15 +93,9 @@ export default function Dashboard({
     setPf(p);
     setOrders(o.orders);
     setPerf(pe);
-    const tickers = [...new Set(p.positions.map((x) => x.ticker))];
-    const nm: Record<string, string> = {};
-    await Promise.all(
-      tickers.map(async (t) => {
-        const r = await j<{ results: { ticker: string; name: string }[] }>(`/api/v1/stocks/search?q=${t}`);
-        if (r.results[0]) nm[t] = r.results[0].name;
-      }),
-    );
-    setNames(nm);
+    // 보유 종목만 조회하면 이미 판 종목이 최근 체결에서 코드로만 보인다.
+    // 전체 코드→이름 맵은 세션당 1회 캐시된다(검색 N번보다 요청도 적다).
+    setNames(await fetchStockNames());
   }, [account]);
 
   useEffect(() => {
@@ -229,21 +223,39 @@ export default function Dashboard({
           {fills.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column" }}>
               {fills.map((f) => (
-                <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: "1px solid #1A1A20", fontSize: 13 }}>
+                <div key={f.id} style={{ display: "flex", gap: 10, padding: "9px 0", borderBottom: "1px solid #1A1A20", fontSize: 13 }}>
                   <span
                     style={{
-                      fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 6,
+                      fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 6, alignSelf: "flex-start",
                       color: f.side === "BUY" ? UP : DOWN,
                       background: f.side === "BUY" ? "rgba(240,68,82,0.12)" : "rgba(49,130,246,0.12)",
+                      whiteSpace: "nowrap",
                     }}
                   >
                     {f.side === "BUY" ? "매수" : "매도"}
                   </span>
-                  <span style={{ fontWeight: 600, flex: 1 }}>{names[f.ticker] ?? f.ticker}</span>
-                  <span style={{ color: "#B7B9C2" }}>
-                    {f.exec_qty}주 · {won(f.exec_price ?? 0)}
-                  </span>
-                  <span style={{ color: "#5C5E68", fontSize: 12 }}>{f.executed_at?.slice(5)}</span>
+                  {/* 카드가 좁아 한 줄에 다 넣으면 종목명이 세로로 접히거나 통째로 잘린다.
+                      종목명·손익을 윗줄, 수량·단가·시각을 아랫줄로 나눈다. */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <span style={{ fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {names[f.ticker] ?? f.ticker}
+                      </span>
+                      {/* 실현손익은 매도에만 있다 — 매수는 진입이라 아직 손익이 없다. */}
+                      <span
+                        style={{ color: f.realized == null ? "#5C5E68" : clr(f.realized), fontWeight: 600, whiteSpace: "nowrap" }}
+                        title={f.realized == null ? "매수는 실현손익이 없습니다" : "매수 수수료까지 반영한 실현손익"}
+                      >
+                        {f.realized == null ? "—" : sgnWon(f.realized)}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 2, fontSize: 12, color: "#8B8D98" }}>
+                      <span style={{ whiteSpace: "nowrap" }}>
+                        {f.exec_qty}주 · {won(f.exec_price ?? 0)}
+                      </span>
+                      <span style={{ color: "#5C5E68", whiteSpace: "nowrap" }}>{f.executed_at?.slice(5)}</span>
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>

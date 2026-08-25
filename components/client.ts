@@ -56,6 +56,7 @@ export type OrderRow = {
   tax: number | null;
   executed_at: string | null;
   reason: string | null; // 이 주문을 낸 AI 판단 근거
+  realized: number | null; // 매도 실현손익 (매수는 null)
 };
 
 /** 최근 거래일 분봉 탐색 — 오늘부터 최대 lookback일 거슬러 올라가며 첫 데이터 반환 */
