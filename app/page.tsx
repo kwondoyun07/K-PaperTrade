@@ -168,7 +168,7 @@ export default function App() {
             <Orders accountId={accountId} active={screen === "orders"} />
           </div>
           <div style={{ display: screen === "ai" ? undefined : "none" }}>
-            <AiLog active={screen === "ai"} />
+            <AiLog accountId={accountId} active={screen === "ai"} />
           </div>
         </main>
       </div>

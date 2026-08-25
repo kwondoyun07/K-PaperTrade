@@ -27,13 +27,21 @@ export async function GET(req: Request) {
   const p = qs(req);
   const ticker = p.get("ticker");
   const limit = Math.min(Number(p.get("limit") ?? 50), 200);
+  // 이 판단이 실제로 낸 주문. 판단 직후 같은 종목·같은 구분으로 나간 첫 주문인데,
+  // 실측 28건이 전부 1~7분 안에 나갔고 판단 사이클은 80분 이상 떨어져 있어
+  // 30분 창이면 옆 사이클 것을 잘못 집지 않는다. HOLD는 주문이 없어 항상 NULL.
+  const ORDER_LINK =
+    "(SELECT o.id FROM orders o WHERE o.owner_type = 'ACCOUNT' AND o.ticker = a.ticker " +
+    "   AND o.side = a.action AND o.ordered_at >= a.ts " +
+    "   AND o.ordered_at < strftime('%Y-%m-%d %H:%M', a.ts, '+30 minutes') " +
+    " ORDER BY o.ordered_at LIMIT 1) AS order_id";
   const rs = ticker
     ? await tradingDb().execute({
-        sql: "SELECT * FROM ai_decisions WHERE ticker = ? ORDER BY ts DESC LIMIT ?",
+        sql: `SELECT a.*, ${ORDER_LINK} FROM ai_decisions a WHERE a.ticker = ? ORDER BY a.ts DESC LIMIT ?`,
         args: [ticker, limit],
       })
     : await tradingDb().execute({
-        sql: "SELECT * FROM ai_decisions ORDER BY ts DESC LIMIT ?",
+        sql: `SELECT a.*, ${ORDER_LINK} FROM ai_decisions a ORDER BY a.ts DESC LIMIT ?`,
         args: [limit],
       });
   return NextResponse.json({ decisions: rs.rows });
