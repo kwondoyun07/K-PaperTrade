@@ -95,14 +95,42 @@ o, s = plan_orders([d("005930", "BUY")], FEATS, pf, set(), "2026-08-03",
                    placed_today=5, max_krw=1_000_000, max_qty=100, max_pos_pct=100, max_orders=5)
 assert not o, "상한 소진 상태에서는 한 건도 나가면 안 된다"
 
-# --- 멱등성: 같은 날 같은 종목은 다시 주문하지 않는다 ---
-done = {("005930", "2026-08-03")}
-o, s = plan_orders([d("005930", "BUY")], FEATS, pf, done, "2026-08-03",
-                   max_krw=1_000_000, max_qty=100, max_pos_pct=100, max_orders=5)
-assert not o and s[0][1] == "당일 중복 주문", s
-o, _ = plan_orders([d("005930", "BUY")], FEATS, pf, done, "2026-08-04",
-                   max_krw=1_000_000, max_qty=100, max_pos_pct=100, max_orders=5)
+# --- 멱등성: 같은 날 **같은 방향** 주문은 다시 나가지 않는다 ---
+LIM = {"max_krw": 1_000_000, "max_qty": 100, "max_pos_pct": 100, "max_orders": 5}
+done = {("005930", "2026-08-03", "BUY")}
+o, s = plan_orders([d("005930", "BUY")], FEATS, pf, done, "2026-08-03", **LIM)
+assert not o and s[0][1] == "당일 매수 중복", s
+o, _ = plan_orders([d("005930", "BUY")], FEATS, pf, done, "2026-08-04", **LIM)
 assert o, "다음 거래일에는 다시 주문할 수 있어야 한다"
+
+# 오전에 산 종목을 그날 팔 수 있어야 한다. SELL이 유일한 손절 경로라 이게 막히면
+# 산 날 악재가 나도 못 판다 — 8/26에 11:49 매수한 005935의 13:10 SELL이 실제로 막혔다.
+o, s = plan_orders([d("005930", "SELL")], FEATS, pf4, done, "2026-08-03", **LIM)
+assert o and o[0]["side"] == "SELL", (o, s)
+
+# 반대로 매도가 나간 뒤 같은 날 또 매도하지는 않는다(왕복은 1회까지).
+done2 = {("005930", "2026-08-03", "SELL")}
+o, s = plan_orders([d("005930", "SELL")], FEATS, pf4, done2, "2026-08-03", **LIM)
+assert not o and s[0][1] == "당일 매도 중복", s
+
+# --- 매도는 보유 전량이 나간다: 금액 상한은 매수 논리라 손절을 부분매도로 끝낸다 ---
+# 실측 매도 12건 중 9건이 AI가 정한 수량이 아니라 100만원 상한이 허용한 수량이었다.
+big = {"cash": 0, "equity": 100_000_000, "positions": [{"ticker": "005930", "qty": 5, "value": 5_000_000}]}
+o, _ = plan_orders([d("005930", "SELL")], {"005930": {"close": 1_000_000}}, big, set(), "2026-08-03",
+                   max_krw=1_000_000, max_qty=100, max_pos_pct=100, max_orders=5)
+assert o[0]["qty"] == 5, f"보유 5주 전량이 나가야 한다 (금액 상한 100만원 × 주당 100만원): {o}"
+
+# 수량 상한은 매도에도 그대로 걸린다(폭주 방지)
+o, _ = plan_orders([d("005930", "SELL")], FEATS, {"cash": 0, "equity": 10_000_000,
+                   "positions": [{"ticker": "005930", "qty": 500, "value": 5_000_000}]}, set(), "2026-08-03",
+                   max_krw=1_000_000, max_qty=100, max_pos_pct=100, max_orders=5)
+assert o[0]["qty"] == 100, o
+
+# 매수는 여전히 상한가 버퍼로 보수적으로 잡는다(체결이 위로 튀어도 현금을 안 넘게)
+o, _ = plan_orders([d("005930", "BUY")], {"005930": {"close": 100_000}},
+                   {"cash": 1_000_000, "equity": 10_000_000, "positions": []}, set(), "2026-08-03",
+                   max_krw=1_000_000, max_qty=100, max_pos_pct=100, max_orders=5)
+assert o[0]["qty"] == 7, f"1,000,000 // (100,000×1.3) = 7주여야 한다: {o}"
 
 # --- HOLD은 주문도 스킵 사유도 만들지 않는다 / 가격 없는 종목 거부 ---
 o, s = plan_orders([d("005930", "HOLD")], FEATS, pf, set(), "2026-08-03")

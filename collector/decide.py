@@ -381,7 +381,7 @@ def plan_orders(
     decisions: list[dict],
     feats: dict[str, dict],
     portfolio: dict,
-    done: set[tuple[str, str]],
+    done: set[tuple[str, str, str]],
     date: str,
     *,
     placed_today: int = 0,
@@ -405,8 +405,12 @@ def plan_orders(
         t, action = d["ticker"], d["action"]
         if action == "HOLD":
             continue
-        if (t, date) in done:
-            skips.append((t, "당일 중복 주문"))
+        # 멱등 키에 방향이 들어간다. (종목, 날짜)만 보면 오전에 산 종목을 그날 팔 수
+        # 없다 — SELL이 이 시스템의 유일한 손절 경로인데 산 날 악재가 나도 못 판다.
+        # 실제로 8/26에 11:49 매수한 005935의 13:10 SELL 판단이 이 컷에 걸렸다.
+        # 방향을 포함하면 같은 방향 재주문은 그대로 막히고(재실행 안전), 왕복은 1회까지다.
+        if (t, date, action) in done:
+            skips.append((t, f"당일 {'매수' if action == 'BUY' else '매도'} 중복"))
             continue
         if placed_today + len(orders) >= max_orders:
             skips.append((t, f"일일 주문 상한 {max_orders}건"))
@@ -416,11 +420,10 @@ def plan_orders(
             skips.append((t, "가격 없음"))
             continue
 
-        # MARKET 주문은 접수 시각이 아니라 다음 분봉에서 체결된다. 상한가(+30%)까지
-        # 튀어도 금액 상한·현금을 넘지 않도록 버퍼를 얹은 가격으로 수량을 정한다.
-        cap = int(price * 1.3)
-
         if action == "BUY":
+            # MARKET 주문은 접수 시각이 아니라 다음 분봉에서 체결된다. 상한가(+30%)까지
+            # 튀어도 금액 상한·현금을 넘지 않도록 버퍼를 얹은 가격으로 수량을 정한다.
+            cap = int(price * 1.3)
             room = equity * max_pos_pct // 100 - value.get(t, 0)  # 종목당 최대 비중
             budget = min(max_krw, cash, room)
             qty = min(budget // cap, max_qty)
@@ -429,7 +432,14 @@ def plan_orders(
                 continue
             cash -= qty * cap  # 같은 배치 안에서 현금을 중복 사용하지 않게(최악가 기준)
         else:
-            qty = min(held.get(t, 0), max_qty, max_krw // cap)
+            # 매도엔 금액 상한도 상한가 버퍼도 걸지 않는다. 둘 다 매수 논리다 —
+            # 매도가 위로 튀면 더 받는 것이고, 수량의 자연 상한은 보유량이라
+            # 보유 이상 팔 수 없다. 보유 자체가 이미 종목당 비중 상한에 갇혀 있다.
+            # 걸어두면 손절이 부분매도로 끝난다: 실측 매도 12건 중 9건이 AI가 정한
+            # 수량이 아니라 100만원 상한이 허용한 수량이었다(8/21 373220은 5주 중
+            # 2주만 나가고 나머지 3주가 4거래일 방치됐다).
+            # 폭주는 max_qty와 키움 MAX_NOTIONAL이 계속 막는다.
+            qty = min(held.get(t, 0), max_qty)
             if qty <= 0:
                 skips.append((t, "미보유"))
                 continue
@@ -612,9 +622,11 @@ def main() -> int:
         o for o in api_get(f"/orders?account_id={account}").get("orders", [])
         if str(o.get("ordered_at", ""))[:10] == today
     ]
-    # 주문 단위 멱등: 오늘 이미 주문(매수·매도)이 있는 종목은 재실행이 다시 주문하지
+    # 주문 단위 멱등: 오늘 이미 **같은 방향** 주문이 나간 종목은 재실행이 다시 주문하지
     # 않는다. 장중 여러 번 도는 구조에서 중복·과다 주문을 막는 핵심 장치다.
-    done = {(str(o.get("ticker", "")).zfill(6), today) for o in orders_today}
+    # 방향을 키에 넣는 이유는 plan_orders 주석 참고 — 손절 경로를 막지 않기 위해서다.
+    # 총량은 MAX_ORDERS_PER_DAY(placed_today)가 따로 조인다.
+    done = {(str(o.get("ticker", "")).zfill(6), today, str(o.get("side", ""))) for o in orders_today}
     # 주문 가격은 위에서 받은 당일 분봉의 최신 종가를 쓴다. 분봉이 없다는 건
     # 휴장이거나 아직 장이 안 열렸다는 뜻이라 그 종목은 주문 대상에서 빠진다
     # (접수해도 체결될 봉이 없어 영구 PENDING이 되기 때문).
