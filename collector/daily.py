@@ -278,11 +278,20 @@ def snapshot_accounts(tdb: Turso, close_map: dict[str, int], date: str) -> None:
     log.info("portfolio_snapshots: %d계좌 기록", len(stmts))
 
 
+def _intraday(ts: str) -> bool:
+    """판단 시각이 장중(09:00~15:29 KST)인가. ts는 'YYYY-MM-DD HH:MM'."""
+    hm = ts[11:16]
+    return "09:00" <= hm < "15:30"
+
+
 def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
     """ai_decisions의 판단 이후 수익률(ret_d5/d20/d60, %)을 거래일 기준으로 채운다.
 
     기준가 = 판단 시점에 AI가 본 가격(decision_price, decide.py가 기록) → ret_basis='decision'.
     없으면(005 마이그레이션 이전 과거분) 판단일 종가로 폴백하고 ret_basis='close'로 표시한다.
+    마감 후(15:30~09:00)에 난 판단은 ret_basis='postclose' — 기준가가 사실상 당일 종가이고
+    그날 움직임을 전부 본 뒤 내린 것이라 장중 판단과 같은 자로 잴 수 없다. GitHub schedule이
+    10~11시간씩 밀리던 동안 이 경로로 115건이 쌓였다(decide.py가 이제 원천 차단한다).
 
     판단일 종가를 기준가로 쓰면 안 되는 이유: 같은 날·같은 종목의 BUY와 HOLD가 글자
     그대로 같은 값을 받아 판단이 아니라 종목·날짜를 재게 되고, AI는 그날 오르는 종목을
@@ -303,7 +312,7 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
     by_ticker: dict[str, list[dict]] = {}
     for d in pending:
         by_ticker.setdefault(str(d["ticker"]), []).append(d)
-    updated = fallback = 0
+    updated = fallback = late = 0
     for ticker, items in by_ticker.items():
         closes = mdb.query(
             "SELECT date, close FROM daily_prices WHERE ticker = ? ORDER BY date", (ticker,)
@@ -317,6 +326,8 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
             basis = "decision"
             if base <= 0:
                 base, basis = float(closes[idx]["close"]), "close"
+            elif not _intraday(str(d["ts"])):
+                basis = "postclose"  # 기준가는 있지만 장 끝나고 본 값이다
             sets, args = ["ret_basis = ?"], [basis]
             for n, col in ((5, "ret_d5"), (20, "ret_d20"), (60, "ret_d60")):
                 if d[col] is None and idx + n < len(dates) and base > 0:
@@ -326,7 +337,9 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
                 tdb.execute(f"UPDATE ai_decisions SET {', '.join(sets)} WHERE id = ?", (*args, int(d["id"])))
                 updated += 1
                 fallback += basis == "close"
-    log.info("ai_decisions 수익률 갱신: %d건 (기준가 폴백 %d건 — ret_basis='close')", updated, fallback)
+                late += basis == "postclose"
+    log.info("ai_decisions 수익률 갱신: %d건 (기준가 폴백 %d건, 마감 후 판단 %d건 — 측정에서 제외)",
+             updated, fallback, late)
 
 
 def main() -> int:

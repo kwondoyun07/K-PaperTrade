@@ -9,8 +9,8 @@ type Decision = {
   id: number; ticker: string; ts: string; action: "BUY" | "SELL" | "HOLD";
   reason_summary: string | null; source: string | null;
   ret_d5: number | null; ret_d20: number | null; ret_d60: number | null;
-  // 'decision' = 판단 시점가 기준(신뢰 가능). 그 외(NULL·'close')는 판단일 종가 기준이라
-  // 같은 날·같은 종목의 BUY와 HOLD가 같은 값을 받는 옛 계산이다 — 화면에서 구분해 표시한다.
+  // 'decision' = 판단 시점가 기준(신뢰 가능). 'close'는 판단일 종가 기준인 옛 계산이고,
+  // 'postclose'는 장 끝난 뒤 난 판단이라 그날 움직임을 다 본 값이다. 셋 다 구분해 표시한다.
   ret_basis: string | null;
   decision_price: number | null; // 판단 시점에 AI가 실제로 본 가격 — 수익률의 기준가
   order_id: number | null;       // 이 판단이 낸 주문 (HOLD·스킵이면 null)
@@ -73,6 +73,10 @@ function Detail({ d, order }: { d: Decision; order: OrderRow | null }) {
         <Field label="수익률 기준">
           {trusted ? (
             "판단 시점가"
+          ) : d.ret_basis === "postclose" ? (
+            <span style={{ color: "#8B8D98" }} title="장 끝난 뒤 난 판단 — 그날 움직임을 다 본 값이라 장중 판단과 같은 자로 못 잰다">
+              마감 후 판단(측정 제외)
+            </span>
           ) : scored ? (
             <span style={{ color: "#8B8D98" }} title="같은 날·같은 종목의 BUY와 HOLD가 같은 값을 받는 옛 계산">
               판단일 종가(옛 계산)

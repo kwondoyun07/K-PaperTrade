@@ -191,4 +191,29 @@ assert db.batch[0][1][2] == 6084154 + 22 * 113360, db.batch[0][1]
 print("자산 스냅샷 테스트 OK")
 
 
+# --- 마감 후 판단은 측정에서 뺀다 ---
+# GitHub schedule이 10~11시간 밀리는 동안 마감 후 판단이 115건 쌓였다. 기준가가
+# 사실상 당일 종가고 그날 움직임을 다 본 뒤 내린 것이라 장중 판단과 못 섞는다.
+from daily import _intraday
+
+assert _intraday("2026-08-28 09:00")
+assert _intraday("2026-08-28 15:29")
+assert not _intraday("2026-08-28 08:59")
+assert not _intraday("2026-08-28 15:30"), "15:30 주문은 체결될 봉이 없다 — 장중이 아니다"
+assert not _intraday("2026-08-28 22:04"), "지연 실행이 밤에 떨어진 실제 사례"
+assert not _intraday("2026-08-28 01:39")
+
+# track_record는 ret_basis='decision'만 쓰므로 postclose는 자동으로 빠진다
+decide.api_get = lambda path: {"decisions": [
+    {"action": "BUY", "ret_d5": 99.0, "ret_basis": "postclose"},  # 마감 후 — 빠져야 한다
+    {"action": "BUY", "ret_d5": 3.0, "ret_basis": "decision"},
+]}
+try:
+    r = decide.track_record()
+    assert "+3.00%" in r and "99" not in r, r
+finally:
+    decide.api_get = _get
+print("마감 후 판단 제외 테스트 OK")
+
+
 print("test_indices OK")

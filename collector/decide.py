@@ -541,6 +541,16 @@ def main() -> int:
     ts = now.strftime("%Y-%m-%d %H:%M") if date == today else f"{date} 15:30"
     block = order_block_reason(date, now, a.account)
 
+    # 오늘 판단인데 장이 닫혔으면 기록조차 하지 않는다. 예전엔 "지연돼도 기록은
+    # 남기자"였는데, 그 기록이 측정을 망친다: 마감 후 판단은 decision_price가 사실상
+    # 당일 종가이고 그날 움직임을 전부 본 뒤에 내린 것이라 장중 판단과 같은 자로 잴
+    # 수 없다(8월 중순에 없앤 ret_basis='close' 문제와 성격이 같다). GitHub schedule이
+    # 10~11시간씩 밀리면서 이 경로로만 115건이 쌓였다.
+    # --date로 과거일을 지정한 의도적 백필은 그대로 둔다 — ts를 15:30으로 찍는다.
+    if date == today and not market_open(now) and not a.dry_run:
+        log.info("장중 아님 %s KST — 판단·주문 모두 건너뛴다(마감 후 기록은 측정을 오염시킨다)", now.strftime("%H:%M"))
+        return 0
+
     mdb = Turso.from_env("KRX_MARKET")
     if mdb is None:
         log.error("TURSO_KRX_MARKET_* env 미설정 — 지표를 만들 수 없다")
