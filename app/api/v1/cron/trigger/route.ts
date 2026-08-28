@@ -27,7 +27,9 @@ export async function POST(req: Request) {
   const name = qs(req).get("workflow") ?? "decide";
   if (!ALLOWED.has(name)) return jerr(`허용되지 않은 워크플로: ${name}`, 400);
 
-  const token = process.env.GITHUB_DISPATCH_TOKEN;
+  // 이미 등록된 릴리스 토큰을 폴백으로 쓴다. 같은 리포·같은 소유자라 신뢰 경계가
+  // 같고, 권한이 모자라면 GitHub가 403으로 알려준다. 그때만 전용 PAT를 발급하면 된다.
+  const token = process.env.GITHUB_DISPATCH_TOKEN || process.env.GITHUB_RELEASE_TOKEN;
   if (!token) return jerr("GITHUB_DISPATCH_TOKEN 미설정", 500);
 
   const r = await fetch(`https://api.github.com/repos/${REPO}/actions/workflows/${name}.yml/dispatches`, {
