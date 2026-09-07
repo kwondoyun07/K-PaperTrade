@@ -208,4 +208,31 @@ except ApiError as e:
 finally:
     decide.API = orig_api
 
+# --- 진입 위치 규율: 매수만 조이고 손절은 그대로 둔다 ---
+# 8/26·9/7 두 시점에서 독립적으로 관찰된 추격 매수를 프롬프트로 억제한다.
+# 매도까지 조이면 손절이 둔해져 8/28 같은 급락에서 더 크게 물린다 — 그래서
+# "매수에만 적용"이 규율의 핵심이고, 그 문장이 사라지면 안 된다.
+from decide import build_prompt, format_row
+
+_row = format_row(
+    "005930", "삼성전자",
+    {"close": 100000, "n": 60, "chg1": 1.0, "chg5": 2.0, "chg20": 3.0,
+     "ma5_gap": 1.0, "ma20_gap": 2.0, "vol_ratio": 1.2},
+    {"last": 101000, "day_open": 99000, "day_high": 102000, "day_low": 98000,
+     "from_open_pct": 2.0, "range_pos": 75, "vwap_gap": 0.8, "mom30": 0.5,
+     "late30_vol_pct": 12.0, "bars": 180},
+)
+assert "고저위치 75%" in _row, _row  # 규율이 참조하는 값이 실제로 프롬프트에 있어야 한다
+assert "VWAP이격 +0.80%" in _row, _row
+
+_p = build_prompt([_row], {"005930": 7})
+assert "매수는 진입 위치를 가려라" in _p
+assert "고저위치 70% 이상" in _p
+assert "매수에만 적용한다" in _p, "손절 면제 조항이 빠지면 급락에서 못 판다"
+assert "손절·악재 청산은 가격 위치와 무관하게 즉시" in _p
+# 매도 규율은 그대로 살아 있어야 한다
+assert "손실이 -7% 이상인데 반등 신호" in _p
+print("진입 위치 규율 테스트 OK")
+
+
 print("test_decide OK")
