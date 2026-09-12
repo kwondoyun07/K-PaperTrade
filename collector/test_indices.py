@@ -216,4 +216,38 @@ finally:
 print("마감 후 판단 제외 테스트 OK")
 
 
+# --- 투자자 수급 파싱 (네이버) ---
+# pykrx가 쓰던 KRX 포털이 2026-09부터 계정 인증(KRX_ID/KRX_PW)을 요구해 막혔다.
+# investor_flows는 그 탓에 한 번도 채워진 적이 없다(실측 0행). 네이버는 종목당
+# 최근 10거래일을 주는데, 값이 **금액이 아니라 수량**이라 그대로 수량으로 저장한다.
+from providers.naver import parse_investor_flows
+
+RAW = [
+    {"bizdate": "20260911", "individualPureBuyQuant": "+3,643,746",
+     "foreignerPureBuyQuant": "-3,531,147", "organPureBuyQuant": "-2,208,594"},
+    {"bizdate": "20260910", "individualPureBuyQuant": "-434,111",
+     "foreignerPureBuyQuant": "-5,769,453", "organPureBuyQuant": "+4,266,985"},
+    {"bizdate": "2026911", "individualPureBuyQuant": "1"},   # 날짜 길이 이상 → 버림
+    {"bizdate": "abcdefgh", "individualPureBuyQuant": "1"},  # 숫자 아님 → 버림
+    "쓰레기",                                                  # 비-dict → 버림
+    {"individualPureBuyQuant": "1"},                          # bizdate 없음 → 버림
+]
+
+f = parse_investor_flows(RAW)
+assert len(f) == 2, f
+assert f[0] == {"date": "2026-09-11", "individual": 3643746,
+                "foreigner": -3531147, "institution": -2208594}, f[0]
+assert f[1]["date"] == "2026-09-10" and f[1]["institution"] == 4266985, f[1]
+
+# 응답이 리스트가 아니면(에러 JSON 등) 빈 목록 — 예외를 밖으로 내보내지 않는다
+assert parse_investor_flows({"error": "not found"}) == []
+assert parse_investor_flows(None) == []
+assert parse_investor_flows([]) == []
+
+# 값이 비거나 형식이 깨져도 0으로 떨어뜨린다(보조 데이터라 판단을 막지 않는다)
+one = parse_investor_flows([{"bizdate": "20260911"}])
+assert one == [{"date": "2026-09-11", "individual": 0, "foreigner": 0, "institution": 0}], one
+print("투자자 수급 파싱 테스트 OK")
+
+
 print("test_indices OK")

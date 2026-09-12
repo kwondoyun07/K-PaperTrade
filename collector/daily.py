@@ -40,12 +40,11 @@ from backfill import collect_minutes
 from providers import make_provider
 from store import upload_release
 from turso import Turso
-from universe import etf_stocks, krx_listing, krx_stocks
+from universe import etf_stocks, krx_listing, krx_stocks, watchlist
 
 KST = ZoneInfo("Asia/Seoul")
 log = logging.getLogger(__name__)
 
-INVESTORS = {"개인": "individual", "외국인": "foreigner", "기관합계": "institution"}
 INDICES = (("KS11", "KOSPI"), ("KQ11", "KOSDAQ"))
 
 DAILY_UPSERT = (
@@ -147,35 +146,51 @@ def daily_price_rows(date: str, date8: str, today: str, listing, out_dir: str | 
     return rows_from_parquet(date, out_dir)
 
 
-def load_flows(date8: str) -> dict[str, dict[str, int]]:
-    """투자자별 순매수 거래대금(원) — 시장×투자자 6회 호출로 전 종목 커버.
+def load_flows(tickers: list[str]) -> dict[str, list[dict]]:
+    """종목별 투자자 순매수 **수량**(주) — 네이버가 종목당 최근 10거래일을 준다.
 
-    pykrx(KRX 포털) 전용 — 대체 무료 벌크 소스 없음. 실패 시 호출측에서 스킵.
+    원래 pykrx(KRX 포털)로 시장×투자자 6회에 전 종목을 받았는데, KRX가 2026-09부터
+    계정 인증을 요구해 막혔다(KRX_ID/KRX_PW 환경변수 요구). investor_flows는 그 탓에
+    한 번도 채워진 적이 없다 — 실측 0행이었다.
+
+    네이버는 종목별 호출이라 전 종목(2,700여 개)은 비현실적이다. 수급은 AI 판단이
+    쓰지 않고 종목 상세 화면의 카드 하나에만 쓰이므로 시총 상위로 좁힌다.
+
+    단위가 금액에서 수량으로 바뀐다 — 화면 라벨도 '(주)'로 맞췄다.
     """
-    rows: dict[str, dict[str, int]] = {}
-    for market in ("KOSPI", "KOSDAQ"):
-        for inv, col in INVESTORS.items():
-            df = krx.get_market_net_purchases_of_equities_by_ticker(date8, date8, market, inv)
-            if df.empty:
-                raise ValueError(f"{market}/{inv} 빈 응답")
-            for tkr, r in df.iterrows():
-                rows.setdefault(str(tkr), {})[col] = int(r["순매수거래대금"])
-    return rows
+    from providers.naver import NaverProvider
+
+    p = NaverProvider()
+    out: dict[str, list[dict]] = {}
+    for t in tickers:
+        try:
+            rows = p.get_investor_flows(t)
+        except Exception as e:  # 한 종목 실패가 전체를 막지 않는다(보조 데이터)
+            log.warning("%s 수급 조회 실패: %s", t, str(e)[:60])
+            continue
+        if rows:
+            out[t] = rows
+    return out
 
 
-def upsert_flows(db: Turso, date: str, flows: dict[str, dict[str, int]]) -> None:
+def upsert_flows(db: Turso, flows: dict[str, list[dict]]) -> None:
+    """종목당 여러 날짜를 한 번에 넣는다 — 네이버가 10거래일치를 주므로 결손도 같이 메워진다."""
     stmts = [
         (
             "INSERT INTO investor_flows (ticker, date, individual, foreigner, institution) "
             "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(ticker, date) DO UPDATE SET individual=excluded.individual, "
             "foreigner=excluded.foreigner, institution=excluded.institution",
-            (t, date, v.get("individual", 0), v.get("foreigner", 0), v.get("institution", 0)),
+            (t, r["date"], r["individual"], r["foreigner"], r["institution"]),
         )
-        for t, v in flows.items()
+        for t, rows in flows.items()
+        for r in rows
     ]
+    if not stmts:
+        log.warning("수급 0행 — 적재 건너뜀")
+        return
     db.execute_batch(stmts)
-    log.info("investor_flows upsert: %d행", len(stmts))
+    log.info("investor_flows upsert: %d행 (%d종목)", len(stmts), len(flows))
 
 
 def _px(v: object, close: float) -> float:
@@ -432,7 +447,12 @@ def main() -> int:
             log.warning("일봉 0행 — 분봉 수집 후 파생 재시도 예정")
 
         try:
-            upsert_flows(db, date, load_flows(date8))
+            # 종목별 호출이라 전 종목은 비현실적 — 시총 상위만. 상장목록 폴백 경로
+            # (listing=None)에선 시총 순위를 못 매기므로 건너뛴다(보조 데이터).
+            if listing is None:
+                log.warning("상장목록 없음 — 수급 수집 건너뜀 (보조 데이터)")
+            else:
+                upsert_flows(db, load_flows(watchlist(30, listing)))
         except Exception as e:
             log.warning("수급 수집 실패 — 스킵 (보조 데이터): %s", e)
 
