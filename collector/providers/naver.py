@@ -64,6 +64,40 @@ def parse_minute(ticker: str, data: object) -> list[MinuteBar]:
     return bars
 
 
+FLOW_URL = "https://m.stock.naver.com/api/stock/{}/trend"
+
+
+def _qty(v: object) -> int:
+    """'+3,643,746' / '-606,502' → int. 부호·천단위 쉼표를 걷어낸다."""
+    s = str(v or "").replace(",", "").replace("+", "").strip()
+    try:
+        return int(s)
+    except ValueError:
+        return 0
+
+
+def parse_investor_flows(raw: object) -> list[dict]:
+    """네이버 trend 응답 → [{date, individual, foreigner, institution}] (순매수 **수량**, 주).
+
+    금액이 아니라 수량이다. 같은 행에 종가가 오지만 곱해서 금액으로 바꾸지 않는다 —
+    실제 체결 단가가 아니라 종가라 없는 정밀도를 지어내는 셈이다.
+    """
+    out: list[dict] = []
+    for r in raw if isinstance(raw, list) else []:
+        if not isinstance(r, dict):
+            continue
+        d = str(r.get("bizdate") or "")
+        if len(d) != 8 or not d.isdigit():
+            continue
+        out.append({
+            "date": f"{d[:4]}-{d[4:6]}-{d[6:]}",
+            "individual": _qty(r.get("individualPureBuyQuant")),
+            "foreigner": _qty(r.get("foreignerPureBuyQuant")),
+            "institution": _qty(r.get("organPureBuyQuant")),
+        })
+    return out
+
+
 class NaverProvider:
     def __init__(self, req_interval: float | None = None, max_retries: int = 3):
         # 초당 1~3요청 원칙 — 기본 0.5초 간격(2req/s), NAVER_REQ_INTERVAL로 조정
@@ -99,6 +133,14 @@ class NaverProvider:
             log.warning("naver 요청 실패(%s), %d초 후 재시도: %s", url, backoff, last_err)
             time.sleep(backoff)
         raise RuntimeError(f"naver 요청 재시도 초과: {url} — {last_err}")
+
+    def get_investor_flows(self, ticker: str) -> list[dict]:
+        """종목별 투자자 순매수 수량 — 최근 10거래일.
+
+        DataProvider Protocol에는 넣지 않는다. 키움 구현체는 이걸 못 주므로
+        인터페이스에 올리면 거짓 계약이 된다 — 네이버에만 있는 메서드다.
+        """
+        return parse_investor_flows(self._get_json(FLOW_URL.format(ticker), {}))
 
     def get_minute_bars(self, ticker: str, date: str | None = None) -> list[MinuteBar]:
         if date:
