@@ -11,7 +11,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { Bar } from "@/lib/engine/types";
-import { clr, DOWN, NEUTRAL, pct, sgnWon, UP, won } from "@/lib/format";
+import { clr, DOWN, NEUTRAL, pct, sgnQty, UP, won } from "@/lib/format";
 import { isMarketOpen, kstDateStr } from "@/lib/market-hours";
 import OrderPanel, { type OrderReqUi } from "./OrderPanel";
 import { fetchLatestMinutes, j, post, type Portfolio, type StockRow } from "./client";
@@ -177,7 +177,9 @@ export default function StockDetail({
           </div>
 
           <div className="card" style={{ padding: 16 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>투자자별 순매수 (원)</div>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }} title="순매수 수량(주). 네이버 제공 — KRX가 무인증 접근을 막아 금액 단위 소스가 없다">
+              투자자별 순매수 (주)
+            </div>
             {flows.length ? (
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
@@ -195,7 +197,7 @@ export default function StockDetail({
                       <td style={{ padding: "7px 0", borderBottom: "1px solid #1A1A20", color: "#B7B9C2" }}>{f.date}</td>
                       {[f.individual, f.foreigner, f.institution].map((v, i) => (
                         <td key={i} style={{ padding: "7px 0", borderBottom: "1px solid #1A1A20", textAlign: "right", color: clr(v) }}>
-                          {sgnWon(v)}
+                          {sgnQty(v)}
                         </td>
                       ))}
                     </tr>

@@ -21,3 +21,7 @@ export function splitReason(reason: string): { votes: string | null; text: strin
   const m = /^\[([^\]]*)\]\s*(.*)$/s.exec(reason);
   return m ? { votes: m[1], text: m[2] } : { votes: null, text: reason };
 }
+
+/** 부호 있는 수량(주). 금액이 아니므로 ₩를 붙이지 않는다 — 수급은 순매수 주식 수다. */
+export const sgnQty = (n: number) =>
+  (n > 0 ? "+" : n < 0 ? "-" : "") + Math.abs(Math.round(n)).toLocaleString("ko-KR");
