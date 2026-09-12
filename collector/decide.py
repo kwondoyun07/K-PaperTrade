@@ -282,6 +282,22 @@ def build_prompt(rows: list[str], holdings: dict[str, int], track: str = "") -> 
     )
 
 
+def recent_universe() -> list[str]:
+    """최근 판단일의 대상 종목 — KRX 상장목록이 죽었을 때 쓰는 워치리스트 폴백.
+
+    시총 상위 N은 며칠 새 거의 안 바뀐다(8/31~9/11 6거래일 동안 최대 1종목 교체).
+    목록을 못 받는다고 그날 매매를 통째로 건너뛰는 것보다 마지막에 쓰던 목록을
+    그대로 쓰는 편이 낫다 — 실제로 9/8~9/10엔 이 호출 하나가 404를 내서 3거래일
+    매매가 날아갔다.
+    """
+    try:
+        rows = api_get("/ai-decisions?limit=200").get("decisions", [])
+    except Exception:  # 폴백의 폴백은 없다 — 호출측이 빈 목록을 보고 중단한다
+        return []
+    latest = max((str(d.get("ts", ""))[:10] for d in rows), default="")
+    return sorted({str(d["ticker"]) for d in rows if str(d.get("ts", ""))[:10] == latest and d.get("ticker")})
+
+
 def track_record() -> str:
     """과거 판단의 실제 성과 요약 — AI가 자기 track record에서 배우게 한다. 근거 없는
     '줏대'를 막고, 뭐가 통했는지 데이터로 스스로 보정하게. 데이터가 없으면 빈 문자열.
@@ -568,9 +584,23 @@ def main() -> int:
         log.error("TURSO_KRX_MARKET_* env 미설정 — 지표를 만들 수 없다")
         return 1
 
-    listing = krx_listing()
-    universe = watchlist(a.top, listing)
-    names = {str(r.Code): str(r.Name) for r in listing.itertuples()}
+    # 상장목록(FDR이 외부 CSV로 받는다)이 404를 내면 판단 전체가 죽는다. 실제로
+    # 9/8~9/10 3거래일이 이것 하나로 통째로 날아갔다 — 종목 선정·이름에만 쓰는
+    # 조회인데 단일 장애점이었다. 워치리스트는 최근 판단 대상으로, 이름은 stocks
+    # 테이블로 대신한다.
+    try:
+        listing = krx_listing()
+        universe = watchlist(a.top, listing)
+        names = {str(r.Code): str(r.Name) for r in listing.itertuples()}
+    except Exception as e:
+        log.warning("KRX 상장목록 조회 실패(%s) — 최근 판단 대상으로 폴백", str(e)[:80])
+        universe = recent_universe()
+        if not universe:
+            log.error("폴백할 최근 판단 이력이 없다 — 중단")
+            return 1
+        names = {str(r["ticker"]): str(r["name"])
+                 for r in mdb.query("SELECT ticker, name FROM stocks WHERE is_active = 1")}
+        log.info("폴백 워치리스트 %d종목", len(universe))
 
     # 계좌 자동 선택은 없다 — 미지정이면 주문 자체를 안 한다(order_block_reason)
     account = a.account

@@ -235,4 +235,43 @@ assert "손실이 -7% 이상인데 반등 신호" in _p
 print("진입 위치 규율 테스트 OK")
 
 
+# --- 상장목록이 죽어도 매매는 계속돼야 한다 ---
+# FDR StockListing이 404를 내자 decide/collect가 사흘 내리 죽어 9/8~9/10 매매가
+# 통째로 날아갔다. 종목 선정·이름에만 쓰는 조회가 단일 장애점이었다.
+# 워치리스트는 시총 상위라 며칠 새 거의 안 바뀌므로(6거래일 최대 1종목 교체)
+# 최근 판단 대상을 그대로 재사용한다.
+from decide import recent_universe
+
+_saved = decide.api_get
+try:
+    # 여러 날짜가 섞여 오면 **가장 최근 날짜**의 종목만 쓴다
+    decide.api_get = lambda path: {"decisions": [
+        {"ts": "2026-09-11 10:30", "ticker": "005930"},
+        {"ts": "2026-09-11 12:30", "ticker": "000660"},
+        {"ts": "2026-09-11 10:30", "ticker": "005930"},   # 중복은 합친다
+        {"ts": "2026-09-04 10:30", "ticker": "999999"},   # 옛 날짜는 버린다
+    ]}
+    assert recent_universe() == ["000660", "005930"], recent_universe()
+
+    # 판단 이력이 없으면 빈 목록 — 호출측이 이걸 보고 중단한다(엉뚱한 종목 매매 금지)
+    decide.api_get = lambda path: {"decisions": []}
+    assert recent_universe() == []
+
+    # API 자체가 죽어도 예외를 밖으로 내보내지 않는다(폴백의 폴백은 없다)
+    def _boom(path):
+        raise RuntimeError("API down")
+    decide.api_get = _boom
+    assert recent_universe() == []
+
+    # ticker가 비어 있는 행은 버린다
+    decide.api_get = lambda path: {"decisions": [
+        {"ts": "2026-09-11 10:30", "ticker": ""},
+        {"ts": "2026-09-11 10:30", "ticker": "005930"},
+    ]}
+    assert recent_universe() == ["005930"], recent_universe()
+finally:
+    decide.api_get = _saved
+print("상장목록 폴백 테스트 OK")
+
+
 print("test_decide OK")
