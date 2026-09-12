@@ -137,8 +137,9 @@ def daily_price_rows(date: str, date8: str, today: str, listing, out_dir: str | 
         ]
     except Exception as e:
         log.warning("pykrx 일봉 실패(%s) — 폴백 시도", e)
-    if date == today:
-        # 스냅샷은 최근 거래일 값이라 과거 일자엔 못 쓴다
+    if date == today and listing is not None:
+        # 스냅샷은 최근 거래일 값이라 과거 일자엔 못 쓴다.
+        # listing이 None이면 상장목록 폴백 경로 — 분봉 파생에 맡긴다.
         return [
             (str(r.Code), date, int(r.Open), int(r.High), int(r.Low), int(r.Close), int(r.Volume))
             for r in listing.itertuples()
@@ -391,22 +392,35 @@ def main() -> int:
             log.error("%s 거래일(pykrx 확인)인데 분봉·FDR 동시 결손 — 진행하되 실패 처리", date)
             rc = 1
 
-    listing = krx_listing()
-    stocks = krx_stocks(listing)
+    # 상장목록이 죽어도 수집은 계속한다 — 9/8~9/10엔 이 호출 하나로 collect가
+    # 사흘 내리 실패해 일봉·지수·자산 스냅샷이 통째로 비었다. 이름 갱신만 건너뛰고
+    # 종목 목록은 DB에서 읽는다(전날까지 쌓인 stocks로 충분하다).
+    db = Turso.from_env("KRX_MARKET")
+    try:
+        listing = krx_listing()
+        stocks = krx_stocks(listing)
+    except Exception as e:
+        log.warning("KRX 상장목록 조회 실패(%s) — DB stocks로 폴백(이름 갱신 생략)", str(e)[:80])
+        listing, stocks = None, []
+        if db is not None:
+            stocks = [{"ticker": str(r["ticker"]), "name": str(r["name"]), "market": str(r["market"])}
+                      for r in db.query("SELECT ticker, name, market FROM stocks WHERE is_active = 1")]
+            log.info("DB stocks 폴백: %d종목", len(stocks))
     if a.tickers:
         tickers = [t.strip() for t in a.tickers.split(",") if t.strip()]
     else:
         tickers = [s["ticker"] for s in stocks]
 
     # 1) 일봉·수급·지수 → Turso
-    db = Turso.from_env("KRX_MARKET")
     if db is None:
         log.warning("TURSO_KRX_MARKET_* env 미설정 — Turso 적재 건너뜀")
     else:
         now = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
         # ETF 이름도 같이 넣는다 — 화면에 코드만 뜨는 걸 막기 위한 이름 소스일 뿐,
         # 수집 유니버스(tickers)에는 넣지 않는다.
-        upsert_stocks(db, stocks + etf_stocks(), now)
+        # listing이 없으면(폴백 경로) stocks는 DB에서 읽은 것이라 되쓸 필요가 없다.
+        if listing is not None:
+            upsert_stocks(db, stocks + etf_stocks(), now)
 
         valid = {s["ticker"] for s in stocks}
         rows = [r for r in daily_price_rows(date, date8, today, listing, a.out) if r[0] in valid]
