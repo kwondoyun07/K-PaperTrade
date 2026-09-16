@@ -418,8 +418,13 @@ def main() -> int:
         log.warning("KRX 상장목록 조회 실패(%s) — DB stocks로 폴백(이름 갱신 생략)", str(e)[:80])
         listing, stocks = None, []
         if db is not None:
+            # ETF는 뺀다. stocks에 ETF 1,100여 개가 들어 있는 건 화면에 이름을 띄우려는
+            # 것일 뿐 수집 대상이 아니다(universe.etf_stocks 주석). 빠뜨렸더니 9/16 폴백
+            # 실행이 ETF 1,160개까지 분봉을 받아 일봉이 3,808행으로 부풀고 수집이
+            # 54분 → 75분으로 늘었다 — 키움 초당 1회 제한 탓이다.
             stocks = [{"ticker": str(r["ticker"]), "name": str(r["name"]), "market": str(r["market"])}
-                      for r in db.query("SELECT ticker, name, market FROM stocks WHERE is_active = 1")]
+                      for r in db.query("SELECT ticker, name, market FROM stocks "
+                                        "WHERE is_active = 1 AND market != 'ETF'")]
             log.info("DB stocks 폴백: %d종목", len(stocks))
     if a.tickers:
         tickers = [t.strip() for t in a.tickers.split(",") if t.strip()]
@@ -447,12 +452,18 @@ def main() -> int:
             log.warning("일봉 0행 — 분봉 수집 후 파생 재시도 예정")
 
         try:
-            # 종목별 호출이라 전 종목은 비현실적 — 시총 상위만. 상장목록 폴백 경로
-            # (listing=None)에선 시총 순위를 못 매기므로 건너뛴다(보조 데이터).
-            if listing is None:
-                log.warning("상장목록 없음 — 수급 수집 건너뜀 (보조 데이터)")
+            # 종목별 호출이라 전 종목은 비현실적 — 시총 상위만. 상장목록 폴백 경로에선
+            # 시총 순위를 못 매기지만 건너뛸 이유는 없다: 전날까지 받던 종목을 그대로
+            # 쓰면 된다(시총 상위는 며칠 새 거의 안 바뀐다). 예전엔 건너뛰어 9/16 수급이 비었다.
+            if listing is not None:
+                flow_tickers = watchlist(30, listing)
             else:
-                upsert_flows(db, load_flows(watchlist(30, listing)))
+                flow_tickers = [str(r["ticker"]) for r in db.query("SELECT DISTINCT ticker FROM investor_flows")]
+                log.info("상장목록 없음 — 기존 수급 종목 %d개로 계속", len(flow_tickers))
+            if flow_tickers:
+                upsert_flows(db, load_flows(flow_tickers))
+            else:
+                log.warning("수급 대상 종목 없음 — 건너뜀 (보조 데이터)")
         except Exception as e:
             log.warning("수급 수집 실패 — 스킵 (보조 데이터): %s", e)
 
