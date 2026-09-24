@@ -100,21 +100,19 @@ assert combine({}) == []
 out = combine({"opus": [d("005930", "HOLD")], "sonnet": [d("005930", "HOLD")]})
 assert acts(out) == {"005930": "HOLD"} and "2/2응답" in out[0]["reason"], out
 
-# --- 모델 목록: GEMINI_API_KEY 없으면 gemini만 조용히 빠진다 ---
+# --- 모델 목록 ---
 env = dict(os.environ)
 try:
-    os.environ.pop("GEMINI_API_KEY", None)
     os.environ["AI_ENSEMBLE"] = "1"
-    os.environ["AI_ENSEMBLE_MODELS"] = "opus, sonnet ,gemini-2.5-pro"
+    os.environ.pop("AI_ENSEMBLE_MODELS", None)
+    assert models() == ["opus", "sonnet"], "기본값은 opus·sonnet — Gemini는 뺐다"
+    os.environ["AI_ENSEMBLE_MODELS"] = " opus , sonnet "
     assert models() == ["opus", "sonnet"], models()
-    os.environ["GEMINI_API_KEY"] = "x"
-    assert models() == ["opus", "sonnet", "gemini-2.5-pro"], models()
     # [결함3 회귀] 같은 모델 중복 지정 → 호출 2배 비용에 자기 자신과의 '합의'
     os.environ["AI_ENSEMBLE_MODELS"] = "opus,opus, sonnet"
     assert models() == ["opus", "sonnet"], models()
-    os.environ["AI_ENSEMBLE_MODELS"] = "gemini-2.5-pro"
-    os.environ.pop("GEMINI_API_KEY")
-    assert models() == [""], "전부 걸러지면 기본 모델 단일 호출로 떨어져야 한다"
+    os.environ["AI_ENSEMBLE_MODELS"] = " , "
+    assert models() == [""], "비면 기본 모델 단일 호출로 떨어져야 한다"
     os.environ["AI_ENSEMBLE"] = "0"
     assert models() == [""], "앙상블 off는 모델 미지정 단일 호출"
 finally:
@@ -134,18 +132,18 @@ finally:
 
 print("test_ensemble OK")
 
-# --- 정족수 우회: 키 없어 모델이 빠져도 정족수는 '설정된 수' 기준 ---
-# gemini는 키가 없으면 models()에서 조용히 빠진다. 그걸로 정족수가 1로 내려가면
-# "2모델 교차검증" 설정이 단일 모델 주문으로 소리 없이 격하된다.
-_saved = {k: os.environ.get(k) for k in ("GEMINI_API_KEY", "AI_ENSEMBLE_MODELS", "AI_ENSEMBLE")}
-os.environ.pop("GEMINI_API_KEY", None)
-os.environ["AI_ENSEMBLE_MODELS"] = "sonnet,gemini-2.5-pro"
+# --- 정족수 우회: 실행 중 모델이 죽어도 정족수는 '설정된 수' 기준 ---
+# opus가 타임아웃으로 빠졌다고 정족수가 1로 내려가면 "2모델 교차검증" 설정이 sonnet 단독
+# 주문으로 소리 없이 격하된다.
+_saved = {k: os.environ.get(k) for k in ("AI_ENSEMBLE_MODELS", "AI_ENSEMBLE")}
+os.environ["AI_ENSEMBLE_MODELS"] = "opus,sonnet"
 os.environ.pop("AI_ENSEMBLE", None)
-assert ensemble.models() == ["sonnet"], ensemble.models()
-assert ensemble.configured_count() == 2, "키 없어 빠진 모델도 설정 수에 센다"
-buy = ensemble.combine({"sonnet": [{"ticker": "005930", "action": "BUY", "reason": "근거"}]}, ensemble.configured_count())
-assert buy[0]["action"] == "HOLD", f"정족수 미달인데 단일 BUY가 통과: {buy}"
-sell = ensemble.combine({"sonnet": [{"ticker": "005930", "action": "SELL", "reason": "악재"}]}, ensemble.configured_count())
+assert ensemble.configured_count() == 2
+buy = ensemble.combine({"opus": [], "sonnet": [{"ticker": "005930", "action": "BUY", "reason": "근거"}]},
+                       ensemble.configured_count())
+assert buy[0]["action"] == "HOLD", f"opus가 죽었는데 sonnet 단독 BUY가 통과: {buy}"
+sell = ensemble.combine({"opus": [], "sonnet": [{"ticker": "005930", "action": "SELL", "reason": "악재"}]},
+                        ensemble.configured_count())
 assert sell[0]["action"] == "SELL", "청산은 정족수로 막으면 안 된다(손실을 못 자른다)"
 # 명시적 단일 모델(AI_ENSEMBLE=0)은 잃을 교차검증이 없으니 BUY 통과
 os.environ["AI_ENSEMBLE"] = "0"
@@ -157,9 +155,8 @@ for k, v in _saved.items():
     else: os.environ[k] = v
 print("정족수 우회 회귀 테스트 OK")
 
-# --- 일시 오류 재시도 (Gemini 503) ---
-# 실측: gemini-3.7-flash가 503을 자주 뱉고 재호출하면 성공한다. 재시도가 없으면
-# 3모델 설정이 매 판단마다 2모델로 조용히 격하되고 BUY가 정족수에 더 자주 걸린다.
+# --- 일시 오류 재시도 (503·과부하) ---
+# 한 모델이 일시 오류로 빠지면 정족수 2에 걸려 그 판단의 BUY가 통째로 보류된다.
 calls = {"n": 0}
 def flaky(prompt, timeout, model):
     calls["n"] += 1

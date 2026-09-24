@@ -16,8 +16,8 @@
 "종목을 빠뜨렸다"는 반대표가 아니라 기권이라 만장일치 판정에서 빠진다. 전원 실패면
 빈 리스트를 돌려주고 decide.py가 기존대로 중단한다.
 
-모델 목록은 AI_ENSEMBLE_MODELS(쉼표, 중복 제거). gemini*는 GEMINI_API_KEY가 있을 때만
-붙고 없으면 조용히 빠진다. AI_ENSEMBLE=0이면 모델 지정 없이 한 번만 부른다(기존 동작).
+모델 목록은 AI_ENSEMBLE_MODELS(쉼표, 중복 제거). AI_ENSEMBLE=0이면 모델 지정 없이 한 번만
+부른다(기존 동작). 모델은 전부 `claude -p --model`로 부른다 — Gemini는 2026-09-24에 뺐다.
 """
 
 import logging
@@ -25,21 +25,18 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import httpx
-
 from decide import ask_claude, parse_decisions, validate
 
 log = logging.getLogger(__name__)
 
 # claude 별칭은 `claude -p --model`로 실측 확인(opus→claude-opus-5, sonnet→claude-sonnet-5).
-# gemini는 gemini-3.7-flash — 무료 티어에서 실제로 응답하는 모델이다. pro 계열은 전부
-# RESOURCE_EXHAUSTED이고 gemini-2.5-pro는 신규 사용자에게 아예 차단됐다(2026-08 실측).
-# 기본값이 죽은 모델이면 env를 안 준 실행이 매번 조용히 한 모델을 잃는다.
-DEFAULT_MODELS = "opus,sonnet,gemini-3.7-flash"
+# Gemini(gemini-3.7-flash)는 2026-09-24에 사용자 요청으로 뺐다 — 무료 키라 503이 잦아
+# 3회 중 1회꼴로 빠졌고, 코드에서 걷어내 기본값에 되살아나지 않게 했다.
+DEFAULT_MODELS = "opus,sonnet"
 
-# BUY에 필요한 최소 응답 모델 수. 2인 이유: 기본 구성이 실질 2모델(gemini는 키가 없어
-# 빠짐)이라 3을 걸면 BUY가 영영 안 나오고, 1이면 모델 하나가 죽는 순간 교차검증이
-# 통째로 사라진 채 단일 모델이 조용히 주문을 만든다(원래 결함). SELL에는 안 건다.
+# BUY에 필요한 최소 응답 모델 수. 2인 이유: 3을 걸면 2모델 구성에서 BUY가 영영 안 나오고,
+# 1이면 모델 하나가 죽는 순간 교차검증이 통째로 사라진 채 단일 모델이 조용히 주문을
+# 만든다(원래 결함). 즉 opus·sonnet이 **둘 다** 응답하고 둘 다 BUY여야 산다. SELL엔 안 건다.
 QUORUM = 2
 
 
@@ -53,17 +50,13 @@ def models() -> list[str]:
     for m in dict.fromkeys(
         m.strip() for m in (os.environ.get("AI_ENSEMBLE_MODELS") or DEFAULT_MODELS).split(",")
     ):
-        if not m:
-            continue
-        if m.startswith("gemini") and not os.environ.get("GEMINI_API_KEY"):
-            log.info("GEMINI_API_KEY 없음 — %s 건너뜀", m)
-            continue
-        out.append(m)
+        if m:
+            out.append(m)
     return out or [""]
 
 
 def configured_count() -> int:
-    """설정에 적힌 모델 수(키가 없어 빠진 것 포함). 정족수 기준 — 조용한 격하를 막는다."""
+    """설정에 적힌 모델 수. 정족수 기준 — 실행 중 모델이 죽어도 정족수가 따라 내려가지 않게."""
     if (os.environ.get("AI_ENSEMBLE") or "1") != "1":
         return 1
     names = dict.fromkeys(
@@ -72,21 +65,9 @@ def configured_count() -> int:
     return len([m for m in names if m]) or 1
 
 
-def ask_gemini(model: str, prompt: str, timeout: int) -> list[dict]:
-    r = httpx.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
-        json={"contents": [{"parts": [{"text": prompt}]}]},
-        timeout=timeout,
-    )
-    r.raise_for_status()
-    parts = r.json()["candidates"][0]["content"]["parts"]
-    return parse_decisions("".join(p.get("text", "") for p in parts))
-
-
-# 일시적 서버 오류는 재시도한다. Gemini 무료 티어가 503(Service Unavailable)을 자주
-# 뱉는데 재호출하면 대개 성공한다(실측: 3회 중 1회 200). 재시도가 없으면 3모델 설정이
-# 매 판단마다 2모델로 조용히 격하되고, 정족수 때문에 BUY가 더 자주 보류된다.
+# 일시적 서버 오류는 재시도한다(과부하·503·타임아웃). 한 모델이 조용히 빠지면 정족수 2에
+# 걸려 그 판단의 BUY가 통째로 보류된다. 원래 Gemini 503 때문에 넣었지만 Claude도
+# overloaded를 낸다.
 _RETRY_HINTS = ("503", "502", "504", "429", "overloaded", "unavailable", "timeout", "timed out")
 
 
@@ -101,11 +82,7 @@ def ask_model(model: str, prompt: str, universe: list[str], timeout: int = 300,
     items = None
     for i in range(attempts):
         try:
-            items = (
-                ask_gemini(model, prompt, timeout)
-                if model.startswith("gemini")
-                else ask_claude(prompt, timeout, model or None)
-            )
+            items = ask_claude(prompt, timeout, model or None)
             break
         except Exception as e:
             last = i == attempts - 1
@@ -133,10 +110,9 @@ def combine(results: dict[str, list[dict]], configured: int | None = None) -> li
     if not live:
         log.error("응답한 모델 없음")
         return []
-    # 정족수는 **설정된 모델 수** 기준이다(요청된 수가 아니라). gemini는 키가 없으면
-    # models()에서 조용히 빠지는데, 그걸로 정족수가 내려가면 "2모델 교차검증" 설정이
-    # 단일 모델 주문으로 소리 없이 격하된다. 명시적으로 1모델만 설정한 경우(AI_ENSEMBLE=0)
-    # 에만 1로 내린다 — 그건 잃을 교차검증이 애초에 없는 의도된 설정이다.
+    # 정족수는 **설정된 모델 수** 기준이다(응답한 수가 아니라). 실행 중 모델 하나가 죽었다고
+    # 정족수가 따라 내려가면 "2모델 교차검증" 설정이 단일 모델 주문으로 소리 없이 격하된다.
+    # 명시적으로 1모델만 설정한 경우(AI_ENSEMBLE=0)에만 1로 내린다 — 잃을 교차검증이 없다.
     quorum = min(QUORUM, configured if configured is not None else len(asked))
     if configured is not None and configured > len(asked):
         log.error("설정 %d모델 중 %d개만 사용 가능 — 정족수 %d 유지(BUY 보류 가능)",

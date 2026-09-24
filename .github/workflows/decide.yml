@@ -68,11 +68,9 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           # 멀티모델 앙상블. 전원 합의한 BUY/SELL만 실행하고 갈리면 HOLD.
-          # 미설정이면 1 = 켜짐. 모델 목록은 ensemble.DEFAULT_MODELS(opus,sonnet,gemini-*).
+          # 미설정이면 1 = 켜짐. 모델 목록은 ensemble.DEFAULT_MODELS(opus,sonnet).
           AI_ENSEMBLE: ${{ vars.AI_ENSEMBLE }}
           AI_ENSEMBLE_MODELS: ${{ vars.AI_ENSEMBLE_MODELS }}
-          # 없으면 gemini만 조용히 빠지고 claude 모델들로 진행한다.
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # 킬 스위치: 저장소 변수 하나로 자동 주문만 끈다(판단 기록은 계속된다).
           # 미설정이면 0 = 주문 안 나감. 켜려면 저장소 Variables에 AI_AUTOTRADE=1.
           AI_AUTOTRADE: ${{ vars.AI_AUTOTRADE || '0' }}
