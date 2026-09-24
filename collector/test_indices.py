@@ -58,7 +58,12 @@ class FakeDB:
 
 import daily  # noqa: E402
 
+from providers import naver as _naver  # noqa: E402
+
 _real = daily.fdr.DataReader
+_real_idx = _naver.NaverProvider.get_index_prices
+# 네이버 폴백은 기본으로 '없음'을 돌려준다 — 단위 테스트가 네트워크를 타면 안 된다.
+_naver.NaverProvider.get_index_prices = lambda self, name, size=20: []
 try:
     daily.fdr.DataReader = lambda code, s, e: DF  # 두 지수 모두 같은 픽스처
     db = FakeDB()
@@ -91,8 +96,49 @@ try:
     except RuntimeError as e:
         assert "KOSDAQ" in str(e) and "일부 결손" in str(e), e
     assert len(db3.stmts) == 4 and {s[1][0] for s in db3.stmts} == {"KOSPI"}, "받아온 쪽은 그대로 쓴다"
+
+    # FDR이 죽으면 네이버가 메운다 — 2026-09-18부터 FDR 지수가 멎어 collect가 매일 실패했다.
+    # 네이버는 최근 N행을 주므로 요청 구간 밖 행은 걸러야 한다.
+    daily.fdr.DataReader = boom
+    _naver.NaverProvider.get_index_prices = lambda self, name, size=20: [
+        (name, "2026-09-23", 7153.99, 7153.99, 7014.98, 7080.92, 0),
+        (name, "2026-09-22", 7000.0, 7050.0, 6990.0, 7017.91, 0),
+        (name, "2026-09-10", 6800.0, 6800.0, 6800.0, 6800.0, 0),   # 구간 밖 → 버림
+    ]
+    db4 = FakeDB()
+    n = upsert_indices(db4, "2026-09-18", "2026-09-23")
+    assert n == 4, f"두 지수 x 구간 안 2행 = 4행 기대, 실제 {n}"
+    assert {s[1][1] for s in db4.stmts} == {"2026-09-22", "2026-09-23"}, "구간 밖 행이 들어왔다"
+    assert {s[1][0] for s in db4.stmts} == {"KOSPI", "KOSDAQ"}
+
+    # 둘 다 죽으면 여전히 실패다 — 폴백이 생겼다고 조용히 초록이 되면 안 된다
+    _naver.NaverProvider.get_index_prices = lambda self, name, size=20: []
+    try:
+        upsert_indices(FakeDB(), "2026-09-18", "2026-09-23")
+        raise AssertionError("두 소스 모두 결손인데 예외가 안 났다")
+    except RuntimeError as e:
+        assert "upstream 500" in str(e), "FDR 실패 사유가 에러에 남아야 한다"
 finally:
     daily.fdr.DataReader = _real
+    _naver.NaverProvider.get_index_prices = _real_idx
+
+# --- 네이버 지수 파싱 ---
+from providers.naver import parse_index_prices  # noqa: E402
+
+_raw = [
+    {"localTradedAt": "2026-09-23", "closePrice": "7,080.92", "openPrice": "7,153.99",
+     "highPrice": "7,153.99", "lowPrice": "7,014.98"},
+    {"localTradedAt": "2026-09-22", "closePrice": "7,017.91"},   # 시/고/저 없음 → 종가로 채움
+    {"localTradedAt": "2026-9-21", "closePrice": "1"},           # 날짜 형식 이상 → 버림
+    {"localTradedAt": "2026-09-20", "closePrice": ""},           # 종가 없음 → 버림
+    "쓰레기",
+]
+_ip = parse_index_prices(_raw, "KOSPI")
+assert len(_ip) == 2, _ip
+assert _ip[0] == ("KOSPI", "2026-09-23", 7153.99, 7153.99, 7014.98, 7080.92, 0), _ip[0]
+assert _ip[1][2:6] == (7017.91, 7017.91, 7017.91, 7017.91), "시/고/저 결측은 종가로 대체"
+assert parse_index_prices({"error": 1}, "KOSPI") == []
+print("지수 네이버 폴백 테스트 OK")
 
 
 # --- update_ai_returns: 기준가 (B-1) ---
@@ -130,6 +176,33 @@ assert abs(got["ret_d5"] - (1200 / 980 - 1) * 100) < 1e-9, got
 sql, got = _ret(None)
 assert got["ret_basis"] == "close", got
 assert abs(got["ret_d5"] - (1200 / 1000 - 1) * 100) < 1e-9, got
+
+
+# --- 휴장일 판단은 채점에서 뺀다 ---
+# 8/17·9/24(추석) 휴장일에 판단이 기록됐다. 그날은 시장 반응이 없어 bisect가 다음 거래일을
+# 집고 수익률이 하루씩 밀린다. 그리고 이미 5·20일 값이 있는 행도 라벨은 바뀌어야 한다 —
+# 예전엔 새 값이 채워질 때만 써서 60일 값이 나오는 두 달 뒤까지 'decision'으로 남았다.
+_hol = RetDB([{"id": 9, "ticker": "005930", "ts": "2026-08-08 10:30",   # 8/8 토요일 — 거래일 아님
+               "decision_price": 1090.0, "ret_basis": "decision",
+               "ret_d5": 1.0, "ret_d20": 2.0, "ret_d60": None}])
+daily.update_ai_returns(_hol, RetDB(closes=CLOSES))
+assert len(_hol.updates) == 1, "라벨만 바뀌어도 써야 한다"
+assert _hol.updates[0][1][0] == "holiday", _hol.updates
+
+# 같은 라벨·새 값 없음이면 쓰지 않는다(매 배치마다 헛 쓰기 금지)
+_same = RetDB([{"id": 10, "ticker": "005930", "ts": "2026-08-03 10:30",
+                "decision_price": 990.0, "ret_basis": "decision",
+                "ret_d5": 1.0, "ret_d20": 2.0, "ret_d60": None}])
+daily.update_ai_returns(_same, RetDB(closes=CLOSES))
+assert _same.updates == [], _same.updates
+# 라벨 없던 행에 점수 없이 라벨만 붙이면 안 된다 — 신뢰 표본으로 잘못 세어진다
+# (실제로 9/17~9/23의 미채점 203건이 'decision'을 받아 17거래일이 22거래일로 부풀었다)
+_fresh = RetDB([{"id": 11, "ticker": "005930", "ts": "2026-08-07 10:30",   # +5거래일이 아직 없음
+                 "decision_price": 1090.0, "ret_basis": None,
+                 "ret_d5": None, "ret_d20": None, "ret_d60": None}])
+daily.update_ai_returns(_fresh, RetDB(closes=CLOSES))
+assert _fresh.updates == [], f"점수 없는 행에 라벨만 붙었다: {_fresh.updates}"
+print("휴장일 판단 채점 제외 테스트 OK")
 
 
 # --- track_record: 폴백 기준가 행은 프롬프트에 안 먹인다 (B-1) ---

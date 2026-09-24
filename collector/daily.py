@@ -40,7 +40,7 @@ from backfill import collect_minutes
 from providers import make_provider
 from store import upload_release
 from turso import Turso
-from universe import etf_stocks, krx_listing, krx_stocks, watchlist
+from universe import etf_stocks, holiday_verdict, krx_listing, krx_stocks, watchlist
 
 KST = ZoneInfo("Asia/Seoul")
 log = logging.getLogger(__name__)
@@ -62,28 +62,7 @@ INDEX_UPSERT = (
 )
 
 
-def holiday_verdict(date: str, lookback: int = 10) -> str | None:
-    """분봉·당일 FDR이 동시에 빈 날의 휴장 여부. 'holiday' | 'traded' | None(판정 불가).
-
-    당일 조회 하나로는 '휴장'과 '소스 장애'가 구분되지 않는다. 그래서 **구간**으로 묻는다:
-    최근 lookback일에 지수 데이터가 있는데 이 날짜만 없으면 휴장이고, 구간이 통째로
-    비면 소스가 죽은 것이다(그때만 판정 불가).
-
-    pykrx를 1순위로 쓰지 않는 이유: 휴장일에 빈 프레임이 아니라 예외(컬럼 없음)를
-    던져 장애와 구분되지 않고, 실제로 며칠씩 죽어 있는 일이 잦다. FDR은 우리가 지수
-    수집에 이미 의존하는 소스라 여기서도 기준으로 삼는다.
-    """
-    base = datetime.strptime(date, "%Y-%m-%d")
-    start = (base - timedelta(days=lookback)).strftime("%Y-%m-%d")
-    try:
-        df = fdr.DataReader("KS11", start, date)
-    except Exception:
-        return None
-    if df.empty:
-        return None  # 구간이 통째로 빔 = FDR 장애
-    return "traded" if date in {str(i)[:10] for i in df.index} else "holiday"
-
-
+# 휴장 판정은 universe로 옮겼다 — decide.py도 쓰는데 daily를 import하면 pykrx가 딸려온다.
 def upsert_stocks(db: Turso, stocks: list[dict], now: str) -> None:
     db.execute_batch(
         [
@@ -240,13 +219,29 @@ def upsert_indices(db: Turso, start: str, end: str | None = None) -> int:
     stmts: list[tuple] = []
     errors = []
     for code, name in INDICES:
+        rows: list[tuple] = []
+        why = "FDR 빈 응답"
         try:
             rows = index_rows(fdr.DataReader(code, start, end), name)
         except Exception as e:
-            errors.append(f"{name}({code}) 조회 실패: {e}")
-            continue
+            why = f"FDR 조회 실패: {e}"
+            log.warning("%s(%s) %s — 네이버 폴백", name, code, why[:80])
         if not rows:
-            errors.append(f"{name}({code}) 데이터 없음")
+            # FDR이 2026-09-18부터 지수를 안 줘서 collect가 매일 실패했다. 벤치마크를
+            # 소스 하나에 걸어두면 통째로 멎는다 — 네이버로 한 번 더 시도한다.
+            try:
+                from providers.naver import NaverProvider
+
+                span = (datetime.strptime(end, "%Y-%m-%d") - datetime.strptime(start, "%Y-%m-%d")).days
+                got = NaverProvider().get_index_prices(name, size=max(10, span + 5))
+                rows = [r for r in got if start <= r[1] <= end]
+                if rows:
+                    log.info("지수 %s: 네이버 폴백 %d행", name, len(rows))
+            except Exception as e:
+                why += f" / 네이버 폴백 실패: {e}"
+        if not rows:
+            # 두 소스의 실패 사유를 함께 남긴다 — 어느 쪽이 죽었는지 로그만 봐도 알게.
+            errors.append(f"{name}({code}) 데이터 없음 ({why})")
             continue
         log.info("지수 %s: %d행 (%s~%s)", name, len(rows), rows[0][1], rows[-1][1])
         stmts += [(INDEX_UPSERT, r) for r in rows]
@@ -320,7 +315,7 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
     from bisect import bisect_left
 
     pending = tdb.query(
-        "SELECT id, ticker, ts, decision_price, ret_d5, ret_d20, ret_d60 FROM ai_decisions "
+        "SELECT id, ticker, ts, decision_price, ret_basis, ret_d5, ret_d20, ret_d60 FROM ai_decisions "
         "WHERE ret_d5 IS NULL OR ret_d20 IS NULL OR ret_d60 IS NULL"
     )
     if not pending:
@@ -338,10 +333,15 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
             idx = bisect_left(dates, str(d["ts"])[:10])
             if idx >= len(dates):
                 continue
+            dday = str(d["ts"])[:10]
             base = float(d["decision_price"] or 0)
             basis = "decision"
             if base <= 0:
                 base, basis = float(closes[idx]["close"]), "close"
+            elif dates[idx] != dday:
+                # 판단일이 거래일이 아니다(휴장). 그날 시장 반응이 없어 기준일이 어긋나고,
+                # bisect가 다음 거래일을 집어 수익률이 하루씩 밀린다. 측정에서 뺀다.
+                basis = "holiday"
             elif not _intraday(str(d["ts"])):
                 basis = "postclose"  # 기준가는 있지만 장 끝나고 본 값이다
             sets, args = ["ret_basis = ?"], [basis]
@@ -349,12 +349,18 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
                 if d[col] is None and idx + n < len(dates) and base > 0:
                     sets.append(f"{col} = ?")
                     args.append((int(closes[idx + n]["close"]) / base - 1) * 100)
-            if len(sets) > 1:
+            # 이미 붙은 라벨이 틀렸으면 새 값 없이도 고쳐 쓴다. 예전엔 새 수익률이 채워질 때만
+            # 써서, 5·20일 값이 있는 판단은 60일 값이 나오는 두 달 뒤까지 라벨이 안 바뀌었다
+            # (8/17 휴장일 30건이 'decision'으로 남았다). 단 **라벨이 없던 행엔 붙이지 않는다** —
+            # 점수 없는 행에 'decision'이 붙으면 신뢰 표본으로 세어진다(실제로 203건이 붙어
+            # 17거래일이 22거래일로 부풀었다). 첫 점수가 들어올 때 같이 쓰면 된다.
+            relabel = d.get("ret_basis") is not None and d.get("ret_basis") != basis
+            if len(sets) > 1 or relabel:
                 tdb.execute(f"UPDATE ai_decisions SET {', '.join(sets)} WHERE id = ?", (*args, int(d["id"])))
                 updated += 1
                 fallback += basis == "close"
-                late += basis == "postclose"
-    log.info("ai_decisions 수익률 갱신: %d건 (기준가 폴백 %d건, 마감 후 판단 %d건 — 측정에서 제외)",
+                late += basis in ("postclose", "holiday")
+    log.info("ai_decisions 수익률 갱신: %d건 (기준가 폴백 %d건, 마감 후·휴장일 판단 %d건 — 측정에서 제외)",
              updated, fallback, late)
 
 

@@ -36,7 +36,7 @@ import dart
 import news
 import reports
 from turso import Turso
-from universe import krx_listing, watchlist
+from universe import holiday_verdict, krx_listing, watchlist
 
 KST = ZoneInfo("Asia/Seoul")
 log = logging.getLogger(__name__)
@@ -577,6 +577,13 @@ def main() -> int:
     # --date로 과거일을 지정한 의도적 백필은 그대로 둔다 — ts를 15:30으로 찍는다.
     if date == today and not market_open(now) and not a.dry_run:
         log.info("장중 아님 %s KST — 판단·주문 모두 건너뛴다(마감 후 기록은 측정을 오염시킨다)", now.strftime("%H:%M"))
+        return 0
+
+    # 휴장일에도 기록하지 않는다. market_open은 평일 09:00~15:29만 보고 공휴일을 모른다 —
+    # 실제로 추석(9/24) 휴장일에 판단 40건이, 8/17엔 30건이 기록돼 채점 표본에 섞였다.
+    # 그날은 시장 반응이 없어 다른 날과 같은 자로 잴 수 없다. 판정 불가(소스 장애)면 진행한다.
+    if date == today and not a.dry_run and holiday_verdict(date) == "holiday":
+        log.info("%s 휴장일 — 판단·주문 모두 건너뛴다", date)
         return 0
 
     mdb = Turso.from_env("KRX_MARKET")
