@@ -274,4 +274,77 @@ finally:
 print("상장목록 폴백 테스트 OK")
 
 
+# --- 코어·위성 (docs/core-satellite.md) ---
+# 8/5~9/23 AI 매매는 -3.56%, 같은 기간 KODEX 200 보유는 +8.48%였다. 코어 ETF를 규칙으로
+# 들고, AI는 위성 안에서만 매매한다.
+from decide import plan_core
+
+C = "069500"
+CK = dict(core_ticker=C, core_pct=70, band_pct=5)
+
+# 전환 첫날(실제 9/24 상태): 코어 0%, 현금 340만 → 현금만큼만 산다(수수료 여유 1%)
+PF_NOW = {"cash": 3_400_000, "equity": 9_640_000, "positions": [
+    {"ticker": "000660", "qty": 1, "value": 1_862_000},
+    {"ticker": "005930", "qty": 6, "value": 1_713_000},
+]}
+o, s = plan_core(PF_NOW, 113_145, set(), "D", placed_today=0, **CK)
+assert o and o[0]["side"] == "BUY" and o[0]["ticker"] == C, (o, s)
+assert o[0]["qty"] == 3_400_000 // int(113_145 * 1.01), o   # 29주
+
+# 밴드 안이면 가만히 — 68% vs 목표 70%±5
+PF_IN = {"cash": 100_000, "equity": 10_000_000, "positions": [{"ticker": C, "qty": 60, "value": 6_800_000}]}
+o, s = plan_core(PF_IN, 113_333, set(), "D", placed_today=0, **CK)
+assert not o and "밴드 안" in s[0][1], s
+
+# 목표보다 많으면 판다(보유를 넘지 않게)
+PF_OVER = {"cash": 0, "equity": 10_000_000, "positions": [{"ticker": C, "qty": 80, "value": 9_000_000}]}
+o, _ = plan_core(PF_OVER, 112_500, set(), "D", placed_today=0, **CK)
+assert o[0]["side"] == "SELL" and o[0]["qty"] == (9_000_000 - 7_000_000) // 112_500, o
+
+# 꺼짐(0%)이면 아무것도 안 한다 — 예전 동작
+assert plan_core(PF_NOW, 113_145, set(), "D", core_ticker=C, core_pct=0, band_pct=5) == ([], [])
+# 가격이 없으면(분봉 없음 = 장 전·휴장) 주문 안 함
+o, s = plan_core(PF_NOW, 0, set(), "D", **CK)
+assert not o and "가격 없음" in s[0][1]
+# 같은 날 같은 방향 중복 금지 / 일일 건수 상한 — 코어도 같은 안전장치를 받는다
+o, s = plan_core(PF_NOW, 113_145, {(C, "D", "BUY")}, "D", **CK)
+assert not o and "중복" in s[0][1]
+o, s = plan_core(PF_NOW, 113_145, set(), "D", placed_today=5, max_orders=5, **CK)
+assert not o and "상한" in s[0][1]
+# 수량 상한도 그대로
+o, _ = plan_core({"cash": 50_000_000, "equity": 60_000_000, "positions": []}, 113_145, set(), "D",
+                 max_qty=100, **CK)
+assert o[0]["qty"] == 100, o
+
+# 위성 상한 — 위성(코어 뺀 개별 종목)이 30%를 넘으면 BUY 금지, SELL은 허용
+SAT = dict(max_krw=2_500_000, max_qty=100, max_pos_pct=25, max_orders=5, core_ticker=C, sat_cap_pct=30)
+PF_SAT_OVER = {"cash": 3_000_000, "equity": 10_000_000, "positions": [
+    {"ticker": C, "qty": 50, "value": 5_600_000},           # 코어 — 위성에 안 센다
+    {"ticker": "005930", "qty": 12, "value": 3_400_000},    # 위성 34% > 30%
+]}
+o, s = plan_orders([d("000660", "BUY")], {"000660": {"close": 100_000}}, PF_SAT_OVER, set(), "D", **SAT)
+assert not o and "위성 상한" in s[0][1], s
+o, s = plan_orders([d("005930", "SELL")], {"005930": {"close": 283_000}}, PF_SAT_OVER, set(), "D", **SAT)
+assert o and o[0]["side"] == "SELL" and o[0]["qty"] == 12, "위성 초과여도 매도(손절)는 막지 않는다"
+
+# 위성 여유가 있으면 여유만큼만 산다 — 위성 20%, 한도 30%, 여유 100만 → 100만 // (10만x1.3) = 7주
+PF_SAT_ROOM = {"cash": 3_000_000, "equity": 10_000_000, "positions": [
+    {"ticker": C, "qty": 60, "value": 6_800_000},
+    {"ticker": "005930", "qty": 7, "value": 2_000_000},
+]}
+o, s = plan_orders([d("000660", "BUY")], {"000660": {"close": 100_000}}, PF_SAT_ROOM, set(), "D", **SAT)
+assert o and o[0]["qty"] == 1_000_000 // 130_000, (o, s)
+
+# 같은 배치 두 건이 위성 상한을 나눠 넘지 못한다
+o, s = plan_orders([d("000660", "BUY"), d("035420", "BUY")],
+                   {"000660": {"close": 100_000}, "035420": {"close": 100_000}}, PF_SAT_ROOM, set(), "D", **SAT)
+assert len(o) == 1 and "위성 상한" in s[0][1], (o, s)
+
+# 코어 없음(sat_cap 100) = 예전 동작 — 위성 상한이 없다
+o, _ = plan_orders([d("000660", "BUY")], {"000660": {"close": 100_000}}, PF_SAT_OVER, set(), "D",
+                   max_krw=2_500_000, max_qty=100, max_pos_pct=25, max_orders=5)
+assert o, "코어 끄면 위성 상한이 없어야 한다"
+print("코어·위성 테스트 OK")
+
+
 print("test_decide OK")

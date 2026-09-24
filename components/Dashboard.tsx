@@ -114,6 +114,11 @@ export default function Dashboard({
   const plSum = pf?.positions.reduce((s, p) => s + p.pnl, 0) ?? 0;
   const costSum = pf?.positions.reduce((s, p) => s + p.avgPrice * p.qty, 0) ?? 0;
   const equity = pf?.equity ?? account.initial_cash;
+  // 코어·위성 구성 — 코어 ETF는 collector universe.CORE_TICKER와 같아야 한다(docs/core-satellite.md)
+  const CORE = "069500";
+  const coreVal = pf?.positions.filter((p) => p.ticker === CORE).reduce((s, p) => s + p.value, 0) ?? 0;
+  const satVal = pf?.positions.filter((p) => p.ticker !== CORE).reduce((s, p) => s + p.value, 0) ?? 0;
+  const share = (v: number) => (equity > 0 ? `${Math.round((v / equity) * 100)}%` : "—");
   const totalRet = (equity / account.initial_cash - 1) * 100;
   const fills = orders.filter((o) => o.status === "FILLED").slice(0, 5);
   const hasCurve = perf.snapshots.length >= 2;
@@ -123,11 +128,18 @@ export default function Dashboard({
     { label: "평가손익", value: sgnWon(plSum), sub: costSum > 0 ? pct((plSum / costSum) * 100) : "보유종목 없음", color: clr(plSum), subColor: clr(plSum) },
     { label: "현금", value: won(pf?.cash ?? account.initial_cash), sub: "주문 가능 금액", color: "#E8E8EC", subColor: "#5C5E68" },
     { label: "누적수익률", value: pct(totalRet), sub: "초기 자본 대비", color: clr(totalRet), subColor: "#5C5E68" },
+    {
+      label: "코어·위성",
+      value: `코어 ${share(coreVal)}`,
+      sub: `위성 ${share(satVal)} · 현금 ${share(pf?.cash ?? 0)}`,
+      color: "#E8E8EC",
+      subColor: "#5C5E68",
+    },
   ];
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 1180 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12 }}>
         {metricCards.map((m) => (
           <div key={m.label} className="card" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: 12, color: "#8B8D98" }}>{m.label}</span>

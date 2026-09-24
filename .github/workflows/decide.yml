@@ -82,6 +82,8 @@ jobs:
           AI_MAX_QTY: ${{ vars.AI_MAX_QTY }}
           AI_MAX_POSITION_PCT: ${{ vars.AI_MAX_POSITION_PCT }}
           AI_MAX_ORDERS_PER_DAY: ${{ vars.AI_MAX_ORDERS_PER_DAY }}
+          # 코어·위성 (docs/core-satellite.md). 미설정이면 0 = 코어 없음(예전 동작).
+          AI_CORE_PCT: ${{ vars.AI_CORE_PCT }}
           # workflow_dispatch 입력을 run 셸에 직접 보간하면 스크립트 주입이 된다
           # (같은 env에 실린 토큰이 전부 탈취된다). env로 받아 인용·검증한다.
           IN_DATE: ${{ inputs.date }}
