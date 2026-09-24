@@ -64,6 +64,39 @@ def parse_minute(ticker: str, data: object) -> list[MinuteBar]:
     return bars
 
 
+INDEX_URL = "https://m.stock.naver.com/api/index/{}/price?pageSize={}&page=1"
+
+
+def parse_index_prices(raw: object, name: str) -> list[tuple]:
+    """네이버 지수 시세 → indices upsert 인자 (code, date, open, high, low, close, volume).
+
+    FDR이 2026-09-18부터 지수를 안 줘서(9/17에서 멈춤) collect가 매일 실패했다.
+    같은 소스 하나에 벤치마크를 걸어두면 이렇게 통째로 멎는다 — 네이버를 폴백으로 둔다.
+    거래량은 안 주므로 0. 벤치마크 계산은 종가만 쓴다.
+    """
+    out: list[tuple] = []
+    for r in raw if isinstance(raw, list) else []:
+        if not isinstance(r, dict):
+            continue
+        d = str(r.get("localTradedAt") or "")
+        if len(d) != 10:
+            continue
+        close = _f(r.get("closePrice"))
+        if not close:
+            continue
+        out.append((name, d, _f(r.get("openPrice")) or close, _f(r.get("highPrice")) or close,
+                    _f(r.get("lowPrice")) or close, close, 0))
+    return out
+
+
+def _f(v: object) -> float:
+    """'7,080.92' → 7080.92. 빈 값·형식 오류는 0."""
+    try:
+        return float(str(v or "").replace(",", "").strip())
+    except ValueError:
+        return 0.0
+
+
 FLOW_URL = "https://m.stock.naver.com/api/stock/{}/trend"
 
 
@@ -133,6 +166,10 @@ class NaverProvider:
             log.warning("naver 요청 실패(%s), %d초 후 재시도: %s", url, backoff, last_err)
             time.sleep(backoff)
         raise RuntimeError(f"naver 요청 재시도 초과: {url} — {last_err}")
+
+    def get_index_prices(self, name: str, size: int = 20) -> list[tuple]:
+        """지수 최근 시세(name = 'KOSPI' | 'KOSDAQ'). FDR 지수가 멎었을 때의 폴백."""
+        return parse_index_prices(self._get_json(INDEX_URL.format(name, size), {}), name)
 
     def get_investor_flows(self, ticker: str) -> list[dict]:
         """종목별 투자자 순매수 수량 — 최근 10거래일.
