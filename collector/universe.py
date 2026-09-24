@@ -5,8 +5,31 @@ fdr.StockListing('KRX')는 종목 목록과 함께 최근 거래일의 OHLCV 스
 daily.py의 일봉 폴백 소스로도 재사용한다.
 """
 
+from datetime import datetime, timedelta
+
 import FinanceDataReader as fdr
 import pandas as pd
+
+
+def holiday_verdict(date: str, lookback: int = 10) -> str | None:
+    """분봉·당일 FDR이 동시에 빈 날의 휴장 여부. 'holiday' | 'traded' | None(판정 불가).
+
+    당일 조회 하나로는 '휴장'과 '소스 장애'가 구분되지 않는다. 그래서 **구간**으로 묻는다:
+    최근 lookback일에 지수 데이터가 있는데 이 날짜만 없으면 휴장이고, 구간이 통째로
+    비면 소스가 죽은 것이다(그때만 판정 불가).
+
+    daily.py에 있던 것을 여기로 옮겼다 — decide.py도 휴장일엔 판단을 안 하려면 써야 하는데,
+    daily를 import하면 pykrx까지 딸려온다. universe는 fdr만 쓴다.
+    """
+    base = datetime.strptime(date, "%Y-%m-%d")
+    start = (base - timedelta(days=lookback)).strftime("%Y-%m-%d")
+    try:
+        df = fdr.DataReader("KS11", start, date)
+    except Exception:
+        return None
+    if df.empty:
+        return None  # 구간이 통째로 빔 = FDR 장애
+    return "traded" if date in {str(i)[:10] for i in df.index} else "holiday"
 
 
 def krx_listing() -> pd.DataFrame:
