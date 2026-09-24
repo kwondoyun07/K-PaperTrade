@@ -40,7 +40,7 @@ from backfill import collect_minutes
 from providers import make_provider
 from store import upload_release
 from turso import Turso
-from universe import etf_stocks, holiday_verdict, krx_listing, krx_stocks, watchlist
+from universe import CORE_TICKER, etf_stocks, holiday_verdict, krx_listing, krx_stocks, watchlist
 
 KST = ZoneInfo("Asia/Seoul")
 log = logging.getLogger(__name__)
@@ -180,6 +180,26 @@ def _px(v: object, close: float) -> float:
     except (TypeError, ValueError):
         return close
     return x if x and x == x else close
+
+
+def etf_daily_rows(ticker: str, start: str, end: str) -> list[tuple]:
+    """ETF 하나의 일봉(FDR 종목 조회) → daily_prices upsert 인자. 코어 ETF 전용.
+
+    시/고/저가가 비면 종가로 채운다(벤치마크·평가는 종가만 쓴다).
+    """
+    rows = []
+    for ts, r in fdr.DataReader(ticker, start, end).iterrows():
+        c = r.get("Close")
+        if c is None or c != c or not c:
+            continue
+
+        def px(v):
+            return int(v) if v is not None and v == v and v else int(c)
+
+        vol = r.get("Volume")
+        rows.append((ticker, str(ts)[:10], px(r.get("Open")), px(r.get("High")), px(r.get("Low")),
+                     int(c), 0 if vol is None or vol != vol else int(vol)))
+    return rows
 
 
 def index_rows(df: pd.DataFrame, name: str) -> list[tuple]:
@@ -456,6 +476,20 @@ def main() -> int:
         else:
             # 아직 실패로 확정하지 않는다 — 분봉 수집 후 파생 폴백이 남아 있다
             log.warning("일봉 0행 — 분봉 수집 후 파생 재시도 예정")
+
+        # 코어 ETF만은 일봉을 받는다 — ETF 제외 규칙의 **단일 예외**. 미러링 기준가·평가·
+        # 주문 검증이 전부 daily_prices를 본다(없으면 첫 코어 매수가 '기준가 없음'으로 막힌다 —
+        # 153130 때와 같은 문제). 상장목록 스냅샷엔 ETF가 없고, 분봉 파생 폴백은 전체가
+        # 0행일 때만 돌아서 따로 받는다. 1종목이라 수집 시간엔 영향이 없다.
+        try:
+            core = etf_daily_rows(CORE_TICKER, date, date)
+            if core:
+                db.execute_batch([(DAILY_UPSERT, r) for r in core])
+                log.info("코어 ETF %s 일봉 %d행", CORE_TICKER, len(core))
+            else:
+                log.warning("코어 ETF %s 일봉 없음", CORE_TICKER)
+        except Exception as e:
+            log.warning("코어 ETF 일봉 실패(%s) — 미러링은 보유 매입가로 폴백한다", str(e)[:60])
 
         try:
             # 종목별 호출이라 전 종목은 비현실적 — 시총 상위만. 상장목록 폴백 경로에선
