@@ -5,10 +5,15 @@ fdr.StockListing('KRX')는 종목 목록과 함께 최근 거래일의 OHLCV 스
 daily.py의 일봉 폴백 소스로도 재사용한다.
 """
 
+import os
 from datetime import datetime, timedelta
 
 import FinanceDataReader as fdr
 import pandas as pd
+
+# 코어 ETF — 코어·위성 구조(docs/core-satellite.md)에서 시장 수익을 맡는다. AI 판단 대상이
+# 아니고, ETF 중 유일하게 일봉을 수집한다. 화면(components/Dashboard.tsx)도 같은 값을 쓴다.
+CORE_TICKER = os.environ.get("AI_CORE_TICKER") or "069500"
 
 
 def holiday_verdict(date: str, lookback: int = 10) -> str | None:

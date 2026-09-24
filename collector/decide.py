@@ -36,7 +36,7 @@ import dart
 import news
 import reports
 from turso import Turso
-from universe import holiday_verdict, krx_listing, watchlist
+from universe import CORE_TICKER, holiday_verdict, krx_listing, watchlist
 
 KST = ZoneInfo("Asia/Seoul")
 log = logging.getLogger(__name__)
@@ -55,6 +55,10 @@ MAX_ORDER_KRW = _int_env("AI_MAX_ORDER_KRW", 1_000_000)  # 1회 주문금액 상
 MAX_QTY = _int_env("AI_MAX_QTY", 100)  # 1회 주문수량 상한
 MAX_POSITION_PCT = _int_env("AI_MAX_POSITION_PCT", 20)  # 종목당 최대 비중(평가액 대비 %)
 MAX_ORDERS_PER_DAY = _int_env("AI_MAX_ORDERS_PER_DAY", 5)
+# 코어·위성 (docs/core-satellite.md). 0이면 코어 없음 = 예전처럼 AI가 전부 운용한다.
+# 코어 ETF는 규칙으로만 유지하고, AI는 나머지 (100 - CORE_PCT)% 안에서만 개별 종목을 산다.
+CORE_PCT = _int_env("AI_CORE_PCT", 0)
+CORE_BAND_PCT = _int_env("AI_CORE_BAND_PCT", 5)  # 목표에서 이만큼(총자산 %p) 벗어나야 리밸런스
 
 
 def autotrade_on() -> bool:
@@ -417,8 +421,13 @@ def plan_orders(
     max_qty: int = MAX_QTY,
     max_pos_pct: int = MAX_POSITION_PCT,
     max_orders: int = MAX_ORDERS_PER_DAY,
+    core_ticker: str | None = None,
+    sat_cap_pct: int = 100,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """판단 → 주문. 수량 산정과 모든 상한 판정이 여기 한 곳에 모여 있다.
+
+    core_ticker·sat_cap_pct: 코어·위성 구조에서 위성(코어 ETF를 뺀 개별 종목) 총액이
+    총자산의 sat_cap_pct%를 넘으면 BUY를 막는다. SELL은 언제나 허용 — 손절 경로다.
 
     반환: (주문 리스트, [(티커, 스킵 사유)]). 순수 함수 — test_decide.py가 직접 검증한다.
     """
@@ -426,6 +435,7 @@ def plan_orders(
     equity = int(portfolio.get("equity", 0))
     held = {str(p["ticker"]): int(p["qty"]) for p in portfolio.get("positions", [])}
     value = {str(p["ticker"]): int(p.get("value", 0)) for p in portfolio.get("positions", [])}
+    sat_value = sum(v for t, v in value.items() if t != core_ticker)
 
     orders: list[dict] = []
     skips: list[tuple[str, str]] = []
@@ -453,12 +463,19 @@ def plan_orders(
             # 튀어도 금액 상한·현금을 넘지 않도록 버퍼를 얹은 가격으로 수량을 정한다.
             cap = int(price * 1.3)
             room = equity * max_pos_pct // 100 - value.get(t, 0)  # 종목당 최대 비중
-            budget = min(max_krw, cash, room)
+            sat_room = equity * sat_cap_pct // 100 - sat_value      # 위성 총액 상한
+            budget = min(max_krw, cash, room, sat_room)
             qty = min(budget // cap, max_qty)
             if qty <= 0:
-                skips.append((t, f"매수 여력 없음(현금 {cash:,} / 비중여유 {room:,})"))
+                # 위성 한도가 실제로 가장 빡빡한 제약일 때만 그렇게 적는다. 현금이 모자란 걸
+                # '위성 상한'이라 적으면 원인을 잘못 짚는다(코어를 끈 100%에서도 그렇게 나왔다).
+                if sat_cap_pct < 100 and sat_room <= min(max_krw, cash, room):
+                    skips.append((t, f"위성 상한 {sat_cap_pct}%(위성 {sat_value:,} / 총자산 {equity:,})"))
+                else:
+                    skips.append((t, f"매수 여력 없음(현금 {cash:,} / 비중여유 {room:,})"))
                 continue
             cash -= qty * cap  # 같은 배치 안에서 현금을 중복 사용하지 않게(최악가 기준)
+            sat_value += qty * cap  # 같은 배치에서 위성 상한을 여러 건이 나눠 넘지 않게
         else:
             # 매도엔 금액 상한도 상한가 버퍼도 걸지 않는다. 둘 다 매수 논리다 —
             # 매도가 위로 튀면 더 받는 것이고, 수량의 자연 상한은 보유량이라
@@ -474,6 +491,57 @@ def plan_orders(
 
         orders.append({"ticker": t, "side": action, "type": "MARKET", "qty": int(qty), "reason": d["reason"]})
     return orders, skips
+
+
+def plan_core(
+    portfolio: dict,
+    price: int,
+    done: set[tuple[str, str, str]],
+    date: str,
+    *,
+    core_ticker: str,
+    core_pct: int,
+    band_pct: int,
+    placed_today: int = 0,
+    max_orders: int = MAX_ORDERS_PER_DAY,
+    max_qty: int = MAX_QTY,
+) -> tuple[list[dict], list[tuple[str, str]]]:
+    """코어(시장 ETF) 리밸런스 — AI 판단과 무관하게 규칙으로만. 순수 함수.
+
+    목표(총자산 x core_pct%)에서 band_pct%p 넘게 벗어날 때만 목표까지 맞춘다. 밴드 안이면
+    가만히 둔다(회전 방지). 대부분 한 방향이다 — 위성이 팔려 현금이 생기면 코어가 산다.
+
+    1회 금액 상한(max_krw)은 적용하지 않는다. 그 상한은 LLM이 수량을 잘못 키우는 걸 막으려는
+    것인데 코어 수량은 규칙이 정한다. 대신 '목표까지의 차이'를 넘지 못하고, 키움 미러링의
+    1건 1,000만원 상한이 최종 방어선으로 남는다. 멱등·일일 건수·킬스위치는 그대로 걸린다.
+    """
+    if core_pct <= 0:
+        return [], []
+    if price <= 0:
+        return [], [(core_ticker, "코어 가격 없음(분봉 없음)")]
+    equity = int(portfolio.get("equity", 0))
+    cash = int(portfolio.get("cash", 0))
+    held = sum(int(p["qty"]) for p in portfolio.get("positions", []) if str(p["ticker"]) == core_ticker)
+    target = equity * core_pct // 100
+    gap = target - held * price
+    now_pct = held * price / equity * 100 if equity else 0.0
+    if abs(gap) <= equity * band_pct // 100:
+        return [], [(core_ticker, f"밴드 안 (코어 {now_pct:.1f}% / 목표 {core_pct}%±{band_pct})")]
+    side = "BUY" if gap > 0 else "SELL"
+    if (core_ticker, date, side) in done:
+        return [], [(core_ticker, f"당일 코어 {'매수' if side == 'BUY' else '매도'} 중복")]
+    if placed_today >= max_orders:
+        return [], [(core_ticker, f"일일 주문 상한 {max_orders}건")]
+    if side == "BUY":
+        # 수수료 0.35% + 체결가 변동 여유. 지수 ETF라 위성처럼 상한가 버퍼(x1.3)는 과하다.
+        qty = int(min(gap, cash) // int(price * 1.01))
+    else:
+        qty = min(int(-gap // price), held)
+    qty = min(qty, max_qty)
+    if qty <= 0:
+        return [], [(core_ticker, f"코어 {side} 수량 0 (현금 {cash:,})")]
+    return [{"ticker": core_ticker, "side": side, "type": "MARKET", "qty": qty,
+             "reason": f"코어 리밸런스 {now_pct:.1f}% → 목표 {core_pct}%"}], []
 
 
 # ---------------------------------------------------------------- API
@@ -620,6 +688,11 @@ def main() -> int:
     # 순위에서 밀린 보유주는 평가조차 안 돼 영원히 못 판다(좀비 포지션). 매도하려면
     # 매일 평가 대상에 있어야 한다. 장중 여러 번 실행하고 중복 주문은 order-level
     # done(오늘 이미 주문된 종목)으로 막으므로, 매번 다시 판단해도 안전하다.
+    # 코어 ETF는 AI 판단 대상이 아니다 — AI가 '시장'을 팔지 못하게(docs/core-satellite.md).
+    # 프롬프트의 '현재 보유'에서도 뺀다.
+    if CORE_PCT > 0:
+        holdings = {t: q for t, q in holdings.items() if t != CORE_TICKER}
+        universe = [t for t in universe if t != CORE_TICKER]
     todo = list(dict.fromkeys([*universe, *holdings]))
     log.info("판단 대상 %d종목(보유 %d 포함): %s", len(todo), len(holdings), ",".join(todo))
 
@@ -697,7 +770,27 @@ def main() -> int:
         if t in feats and t in intra and intra[t].get("last")
     }
 
-    orders, skips = plan_orders(recorded, live, portfolio, done, today, placed_today=len(orders_today))
+    # 코어 리밸런스 먼저 — AI 판단과 무관하게 규칙으로(docs/core-satellite.md).
+    core_orders: list[dict] = []
+    if CORE_PCT > 0:
+        core_px = int((intraday_features([CORE_TICKER], date).get(CORE_TICKER) or {}).get("last") or 0)
+        core_orders, core_skips = plan_core(portfolio, core_px, done, today, core_ticker=CORE_TICKER,
+                                            core_pct=CORE_PCT, band_pct=CORE_BAND_PCT,
+                                            placed_today=len(orders_today))
+        for t, why in core_skips:
+            log.info("코어 %s — %s", t, why)
+        if core_px:
+            live[CORE_TICKER] = {"close": core_px}
+    # 코어가 쓸 현금은 위성이 못 쓴다(같은 배치에서 이중 사용 방지)
+    spent = sum(o["qty"] * int(live[o["ticker"]]["close"] * 1.01) for o in core_orders if o["side"] == "BUY")
+    sat_pf = {**portfolio, "cash": int(portfolio.get("cash", 0)) - spent}
+    sat_orders, skips = plan_orders(
+        recorded, live, sat_pf, done, today,
+        placed_today=len(orders_today) + len(core_orders),
+        core_ticker=CORE_TICKER if CORE_PCT > 0 else None,
+        sat_cap_pct=100 - CORE_PCT if CORE_PCT > 0 else 100,
+    )
+    orders = core_orders + sat_orders
     for t, why in skips:
         log.info("주문 스킵 %s — %s", t, why)
     if not orders:
