@@ -244,12 +244,14 @@ from decide import recent_universe
 
 _saved = decide.api_get
 try:
-    # 여러 날짜가 섞여 오면 **가장 최근 날짜**의 종목만 쓴다
+    # **가장 최근 사이클(ts)**의 종목만 쓴다. 날짜로 묶으면 그날 아침 사이클이 판단한 엉뚱한
+    # 종목(시총이 빈 새벽 목록에서 나온 이름순 10종목)이 섞여 돌아온다.
     decide.api_get = lambda path: {"decisions": [
-        {"ts": "2026-09-11 10:30", "ticker": "005930"},
+        {"ts": "2026-09-11 12:30", "ticker": "005930"},
         {"ts": "2026-09-11 12:30", "ticker": "000660"},
-        {"ts": "2026-09-11 10:30", "ticker": "005930"},   # 중복은 합친다
-        {"ts": "2026-09-04 10:30", "ticker": "999999"},   # 옛 날짜는 버린다
+        {"ts": "2026-09-11 12:30", "ticker": "005930"},   # 중복은 합친다
+        {"ts": "2026-09-11 10:30", "ticker": "060310"},   # 같은 날 앞 사이클은 버린다
+        {"ts": "2026-09-04 10:30", "ticker": "999999"},   # 옛 날짜도 버린다
     ]}
     assert recent_universe() == ["000660", "005930"], recent_universe()
 
@@ -272,6 +274,45 @@ try:
 finally:
     decide.api_get = _saved
 print("상장목록 폴백 테스트 OK")
+
+
+# --- 시총이 빈 상장목록에서 '이름순 앞 n종목'을 시총 상위로 내면 안 된다 ---
+# 캐시 저장소의 당일 새벽판은 Marcap이 전부 NaN이고 이름순이다. nlargest는 예외 없이 앞 n행을
+# 돌려줘서, 9/14~10/1 아침 사이클 16번이 3S·AJ네트웍스 등 소형주 10개를 판단했다.
+import pandas as pd  # noqa: E402
+
+import universe  # noqa: E402
+
+_n = 1200
+_codes = [f"{i:06d}" for i in range(_n)]
+_good = pd.DataFrame({"Code": _codes, "Name": _codes, "Market": "KOSPI", "Marcap": range(_n, 0, -1)})
+_dawn = _good.sort_values("Code", ascending=False).assign(Marcap=float("nan"))  # 순서도 다르다
+_saved_u = (universe.cached_listing, universe._etf_codes)
+_calls = []
+try:
+    universe._etf_codes = lambda: set()
+    universe.cached_listing = lambda: _calls.append(1) or _good
+    assert universe.marcap_ok(_good) and not universe.marcap_ok(_dawn)
+    assert not universe.marcap_ok(_dawn.assign(Marcap="-")), "문자열 '-'도 결측이다"
+    assert not universe.marcap_ok(_good.head(10)), "잘린 응답은 순위를 못 매긴다"
+    assert not universe.marcap_ok(None)
+
+    assert universe.watchlist(3, _dawn) == ["000000", "000001", "000002"], "새벽판이면 캐시의 시총 순위를 쓴다"
+    assert _calls == [1]
+    assert universe.watchlist(3, _good) == ["000000", "000001", "000002"]
+    assert _calls == [1], "정상 목록이면 캐시를 부르지 않는다"
+
+    def _no_cache():
+        raise ValueError("캐시도 없음")
+    universe.cached_listing = _no_cache
+    try:
+        universe.watchlist(3, _dawn)
+        raise AssertionError("시총을 못 구하면 예외여야 한다 — 호출측이 recent_universe로 넘어간다")
+    except ValueError:
+        pass
+finally:
+    universe.cached_listing, universe._etf_codes = _saved_u
+print("시총 결측 상장목록 폴백 테스트 OK")
 
 
 # --- 코어·위성 (docs/core-satellite.md) ---

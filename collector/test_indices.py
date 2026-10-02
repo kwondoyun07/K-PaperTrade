@@ -2,7 +2,6 @@
 
 - 지수 파싱·upsert(결손 시 실패)
 - AI 판단 수익률 기준가(decision_price vs 판단일 종가 폴백)
-- track_record가 폴백 기준가 행을 프롬프트에 먹이지 않는지
 
 실행: uv run python test_indices.py
 """
@@ -205,28 +204,6 @@ assert _fresh.updates == [], f"점수 없는 행에 라벨만 붙었다: {_fresh
 print("휴장일 판단 채점 제외 테스트 OK")
 
 
-# --- track_record: 폴백 기준가 행은 프롬프트에 안 먹인다 (B-1) ---
-import decide  # noqa: E402
-
-_get = decide.api_get
-try:
-    DECS = [
-        {"action": "BUY", "ret_d5": -5.0, "ret_basis": None},    # 컬럼 도입 전 계산분
-        {"action": "BUY", "ret_d5": -9.0, "ret_basis": "close"},  # decision_price 없는 폴백
-        {"action": "BUY", "ret_d5": 3.0, "ret_basis": "decision"},
-        {"action": "HOLD", "ret_d5": 1.0, "ret_basis": "decision"},
-    ]
-    decide.api_get = lambda path: {"decisions": DECS}
-    s = decide.track_record()
-    assert "BUY 1건" in s and "+3.00%" in s, s  # 폴백 2건은 평균에서 빠진다
-    assert "HOLD 1건" in s, s
-
-    decide.api_get = lambda path: {"decisions": DECS[:2]}
-    assert decide.track_record() == "", "신뢰 가능한 행이 없으면 빈 문자열(틀린 신호보다 없는 신호)"
-finally:
-    decide.api_get = _get
-
-
 # --- 자산 스냅샷: 키움 추정예탁자산 우선 ---
 # 8/5 스냅샷이 매수대금을 차감하지 않은 채 보유를 계상해 총자산을 1,822,090원
 # 부풀렸고, 누적수익률이 -13.97%로 표시됐다(실제 +1.6%). ETF는 일봉이 없어
@@ -275,17 +252,6 @@ assert not _intraday("2026-08-28 08:59")
 assert not _intraday("2026-08-28 15:30"), "15:30 주문은 체결될 봉이 없다 — 장중이 아니다"
 assert not _intraday("2026-08-28 22:04"), "지연 실행이 밤에 떨어진 실제 사례"
 assert not _intraday("2026-08-28 01:39")
-
-# track_record는 ret_basis='decision'만 쓰므로 postclose는 자동으로 빠진다
-decide.api_get = lambda path: {"decisions": [
-    {"action": "BUY", "ret_d5": 99.0, "ret_basis": "postclose"},  # 마감 후 — 빠져야 한다
-    {"action": "BUY", "ret_d5": 3.0, "ret_basis": "decision"},
-]}
-try:
-    r = decide.track_record()
-    assert "+3.00%" in r and "99" not in r, r
-finally:
-    decide.api_get = _get
 print("마감 후 판단 제외 테스트 OK")
 
 

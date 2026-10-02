@@ -7,9 +7,12 @@ daily.py의 일봉 폴백 소스로도 재사용한다.
 
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import FinanceDataReader as fdr
 import pandas as pd
+
+KST = ZoneInfo("Asia/Seoul")
 
 # 코어 ETF — 코어·위성 구조(docs/core-satellite.md)에서 시장 수익을 맡는다. AI 판단 대상이
 # 아니고, ETF 중 유일하게 일봉을 수집한다. 화면(components/Dashboard.tsx)도 같은 값을 쓴다.
@@ -41,6 +44,39 @@ def krx_listing() -> pd.DataFrame:
     return fdr.StockListing("KRX")
 
 
+# FDR이 읽는 캐시 저장소. 2026-09-11부터 당일 파일의 새벽판(03~06시 커밋)은 Marcap·Close가
+# 전부 비어 있고 이름순이다 — 그대로 nlargest를 하면 앞 10행(3S, AJ네트웍스 …)이 '시총 상위'로
+# 나온다. 실제로 9/14~10/1의 10:30 사이클(9/28부터는 12:30도) 16번이 그 10종목을 판단했다.
+CACHE_URL = ("https://raw.githubusercontent.com/FinanceData/fdr_krx_data_cache/"
+             "refs/heads/master/data/listing/krx/{}.csv")
+_CACHE_DTYPE = {"Code": str, "Dept": str, "ChangeCode": str, "MarketId": str}  # FDR과 같은 인자
+
+
+def marcap_ok(df: pd.DataFrame | None) -> bool:
+    """시총 순위를 매길 수 있는 목록인가. 새벽판(전부 NaN)과 잘린 응답을 거른다."""
+    if df is None or len(df) < 1000 or "Marcap" not in df:
+        return False
+    return bool((pd.to_numeric(df["Marcap"], errors="coerce") > 0).mean() > 0.9)
+
+
+def cached_listing(days: int = 10) -> pd.DataFrame:
+    """캐시 저장소에서 Marcap이 온전한 가장 최근 파일. KRX 포털이 죽어도 동작한다.
+
+    오늘 파일부터 본다(정오 이후엔 오늘 것이 온전하다). 10일인 이유: 추석 연휴처럼
+    거래일 간격이 8일까지 벌어진다. 전부 실패하면 예외 — 호출측이 다음 폴백으로 넘어간다.
+    """
+    today = datetime.now(KST)
+    for back in range(days + 1):
+        d = (today - timedelta(days=back)).strftime("%Y-%m-%d")
+        try:
+            df = pd.read_csv(CACHE_URL.format(d), index_col=0, dtype=_CACHE_DTYPE).reset_index(drop=True)
+        except Exception:  # 404(휴일)·네트워크 — 하루 더 거슬러 간다
+            continue
+        if marcap_ok(df):
+            return df
+    raise ValueError(f"최근 {days}일 캐시에 시총이 온전한 상장목록이 없다")
+
+
 def _etf_codes() -> set[str]:
     """KRX ETF 종목코드. StockListing('KRX')에 ETF가 시총 상위로 섞여 들어와
     (예: 채권형 ETF), 걸러내지 않으면 AI가 현금성 자산을 매매한다."""
@@ -58,6 +94,9 @@ def watchlist(n: int = 50, listing: pd.DataFrame | None = None) -> list[str]:
     ETF는 제외한다 — 시총 상위에 채권/현금성 ETF가 섞여 매매되면 안 되므로.
     """
     df = listing if listing is not None else krx_listing()
+    if not marcap_ok(df):
+        # 검증 없이 nlargest를 하면 NaN뿐인 목록에서 앞 n행이 조용히 나온다(예외도 경고도 없다).
+        df = cached_listing()
     df = df[~df["Market"].astype(str).str.upper().str.contains("KONEX")]
     df = df[~df["Code"].astype(str).isin(_etf_codes())]
     top = df.nlargest(n, "Marcap")
