@@ -399,6 +399,10 @@ def parse_fills(rows: list) -> dict[str, dict]:
             continue
         no, px = _ordno(r.get("ord_no")), _num(r.get("cntr_pric"))
         if no and px:
+            if no in out:
+                # 주문당 누적 1행으로 보고 뒤 행을 쓴다(체결가가 평균가 형태로 온다). 건별 행이면
+                # 합산해야 하는데 형식을 실제 응답으로 확인하지 못했다 — 나오면 로그로 가린다.
+                log.warning("체결내역에 주문번호 %s가 여러 행: 수량 %s → %s", no, out[no]["qty"], r.get("cntr_qty"))
             out[no] = {
                 "price": px,
                 "qty": _num(r.get("cntr_qty")),
@@ -427,12 +431,19 @@ def parse_positions(balance_json: dict) -> list[dict]:
     return out
 
 
-def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, today: str) -> None:
+def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, today: str,
+                     final: bool = False) -> None:
     """키움 모의계좌의 실제 예수금·보유를 웹 계좌에 그대로 반영한다(키움이 기준).
 
     웹은 ACCOUNT 자체 체결을 더는 하지 않는다 — 여기서 키움 상태를 덮어써 두 계좌
-    값을 맞춘다. 오늘 주문은 키움 수용 여부(broker_order_id)로 상태를 확정한다:
-    실주문번호→FILLED, FAILED/SKIP→REJECTED, 그 외(미전송)→PENDING 유지.
+    값을 맞춘다. 오늘 주문은 키움 체결내역으로 확정한다: 전량 체결→FILLED + 실제 체결가,
+    FAILED/SKIP→REJECTED, 그 외(미전송·아직 체결 전)→PENDING 유지.
+
+    final=False(장중, 주문 3초 뒤)에는 **체결내역에 전량이 잡힌 주문만** 기록한다. 그때
+    미체결·부분체결인 주문을 평단으로 추정해 적으면 NOT EXISTS 가드 때문에 다시는 못 고친다 —
+    #51(379,000 체결이 387,000으로), #66, #67(수수료가 6주 중 2주분)이 그렇게 굳었다.
+    남겨 둔 주문은 다음 사이클과 마감 후 동기화가 다시 집는다. final=True(마감 후 collect)는
+    그날의 마지막 기회라, 체결 행이 있으면 그 값으로, 없을 때만 평단 추정으로 확정한다.
     """
     # entr(예수금)는 T+2 결제 전이라 매수해도 안 줄어든다(현금 부풀림). d2_entra(D+2
     # 예수금)가 매수·매도가 반영된 실제 현금이다. 없으면 entr로 폴백.
@@ -463,33 +474,52 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
     # PENDING뿐 아니라 **체결기록이 빠진 FILLED**도 다시 집는다. 전량 매도하면 보유가
     # 사라져 예전 코드가 체결가를 못 구하고 executions를 건너뛴 채 FILLED로 확정해버려,
     # 다시는 복구되지 않았다(주문은 체결됐는데 체결내역·수수료가 화면에 없음).
+    # 마감 후(final)에는 지난 7일의 PENDING도 집는다. 장중에 '체결 대기'로 남긴 주문은 그날
+    # 마감 후 동기화가 못 돌면(수집 실패 등) 다음 날부터 조회에서 빠져 영영 PENDING으로 남는다.
+    since = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d") if final else today
     orders = db.query(
-        "SELECT id, ticker, side, qty, broker_order_id FROM orders o "
-        "WHERE owner_type = 'ACCOUNT' AND owner_id = ? AND substr(ordered_at, 1, 10) = ? "
-        "AND (status = 'PENDING' OR (status = 'FILLED' "
-        "     AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.order_id = o.id)))",
-        (account_id, today),
+        "SELECT id, ticker, side, qty, broker_order_id, ordered_at FROM orders o "
+        "WHERE owner_type = 'ACCOUNT' AND owner_id = ? "
+        "AND ((status = 'PENDING' AND substr(ordered_at, 1, 10) BETWEEN ? AND ?) "
+        "  OR (status = 'FILLED' AND substr(ordered_at, 1, 10) = ? "
+        "      AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.order_id = o.id)))",
+        (account_id, since, today, today),
     )
+    real = guessed = waiting = 0
     for o in orders:
         bid = str(o["broker_order_id"] or "")
         oid = int(o["id"])
+        # 체결 시각은 주문 시각으로 적는다(시장가라 분 단위 차이). 동기화 시각을 적으면
+        # 대기했다가 확정된 주문이 몇 시간 뒤 체결된 것처럼 남는다.
+        ordered = str(o.get("ordered_at") or "")
+        at = ordered or now
         if bid and not bid.startswith(("FAILED:", "SKIP:", "SENDING:")):
-            stmts.append(("UPDATE orders SET status = 'FILLED' WHERE id = ? AND status = 'PENDING'", (oid,)))
-            # 키움이 준 **실제** 체결가·수수료·세금을 우선 쓴다. 없으면(과거일 주문 등)
-            # 보유 매입가 + 요율 계산으로 폴백 — 근사치라 화면 표기가 어긋날 수 있다.
-            f = fills.get(_ordno(bid))
-            if f:
-                px, cm, tx = f["price"], f["commission"], f["tax"]
-            else:
+            # 체결내역(ka10076)은 당일분만 온다 — 지난 날 주문에 오늘 체결을 붙이지 않는다.
+            f = fills.get(_ordno(bid)) if ordered[:10] in ("", today) else None
+            qty = int(o["qty"])
+            # 체결 수량 0은 '필드 없음'으로 본다(예전 동작 유지) — 그 밖엔 주문 수량을 채워야 전량 체결.
+            if f and (f["qty"] >= qty or f["qty"] == 0):
+                px, cm, tx, n = f["price"], f["commission"], f["tax"], qty
+                real += 1
+            elif not final:
+                waiting += 1
+                continue
+            elif f:  # 마감 후에도 일부만 체결 — 체결된 만큼만 실제 값으로 남긴다
+                px, cm, tx, n = f["price"], f["commission"], f["tax"], f["qty"]
+                real += 1
+            else:    # 체결내역에 없다(과거일 주문 등) — 보유 매입가 + 요율 추정
                 px = avg_by.get(str(o["ticker"]).zfill(6), 0)
-                cm, tx = fees(str(o["side"]), px, int(o["qty"])) if px > 0 else (0, 0)
+                cm, tx = fees(str(o["side"]), px, qty) if px > 0 else (0, 0)
+                n = qty
+                guessed += 1
+            stmts.append(("UPDATE orders SET status = 'FILLED' WHERE id = ? AND status = 'PENDING'", (oid,)))
             if px > 0:
                 # 재실행·동시실행에서 같은 주문이 두 번 쌓이지 않게 NOT EXISTS로 막는다.
                 stmts.append((
                     "INSERT INTO executions (order_id, price, qty, commission, tax, executed_at) "
                     "SELECT ?, ?, ?, ?, ?, ? "
                     "WHERE NOT EXISTS (SELECT 1 FROM executions WHERE order_id = ?)",
-                    (oid, px, int(o["qty"]), cm, tx, now, oid),
+                    (oid, px, n, cm, tx, at, oid),
                 ))
             else:
                 log.warning("주문 #%s 체결가 미상 — 체결내역을 기록하지 못했다", oid)
@@ -500,7 +530,8 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
             ))
 
     db.execute_batch(stmts)
-    log.info("키움→웹 동기화: 예수금 %s원, 보유 %d종목", f"{cash:,}", len(positions))
+    log.info("키움→웹 동기화: 예수금 %s원, 보유 %d종목 (체결 기록: 실제 %d건, 추정 %d건, 체결 대기 %d건)",
+             f"{cash:,}", len(positions), real, guessed, waiting)
 
 
 def main() -> int:

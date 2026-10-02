@@ -198,7 +198,7 @@ class KiwoomProvider:
         return bars
 
     def get_daily_bars(self, ticker: str, start: str, end: str) -> list[dict]:
-        raise NotImplementedError("일봉·수급은 pykrx/FDR 경로 사용 (daily.py 참고)")
+        raise NotImplementedError("일봉은 분봉 파생, 수급은 네이버 (daily.py 참고)")
 
     def get_quote(self, ticker: str) -> dict:
         bars = self.get_minute_bars(ticker)

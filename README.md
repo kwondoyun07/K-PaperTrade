@@ -77,8 +77,8 @@ uv run python test_parse.py
 - GitHub Actions 시크릿: `TURSO_KRX_MARKET_URL`, `TURSO_KRX_MARKET_AUTH_TOKEN`,
   `TURSO_TRADING_URL`, `TURSO_TRADING_AUTH_TOKEN`(스냅샷·AI 수익률 배치),
   `TURSO_API_TOKEN`(주간 덤프 backup.yml).
-- pykrx(KRX 포털) 벌크 API가 불안정할 때: 일봉은 FDR 스냅샷 폴백(당일만),
-  지수는 FDR(KS11/KQ11) 단독, 수급은 실패 시 스킵(보조 데이터).
+- 일봉은 그날 수집한 분봉의 정규장(09:00~15:40) 봉에서 파생한다(`docs/data-pipeline.md`).
+  지수는 FDR(KS11/KQ11) → 네이버 폴백, 수급은 실패 시 스킵(보조 데이터).
 
 ## 데이터 출처 고지
 
