@@ -36,7 +36,7 @@ import dart
 import news
 import reports
 from turso import Turso
-from universe import CORE_TICKER, cached_listing, holiday_verdict, krx_listing, watchlist
+from universe import CORE_TICKER, cached_listing, krx_listing, watchlist
 
 KST = ZoneInfo("Asia/Seoul")
 log = logging.getLogger(__name__)
@@ -616,13 +616,6 @@ def main() -> int:
         log.info("장중 아님 %s KST — 판단·주문 모두 건너뛴다(마감 후 기록은 측정을 오염시킨다)", now.strftime("%H:%M"))
         return 0
 
-    # 휴장일에도 기록하지 않는다. market_open은 평일 09:00~15:29만 보고 공휴일을 모른다 —
-    # 실제로 추석(9/24) 휴장일에 판단 40건이, 8/17엔 30건이 기록돼 채점 표본에 섞였다.
-    # 그날은 시장 반응이 없어 다른 날과 같은 자로 잴 수 없다. 판정 불가(소스 장애)면 진행한다.
-    if date == today and not a.dry_run and holiday_verdict(date) == "holiday":
-        log.info("%s 휴장일 — 판단·주문 모두 건너뛴다", date)
-        return 0
-
     mdb = Turso.from_env("KRX_MARKET")
     if mdb is None:
         log.error("TURSO_KRX_MARKET_* env 미설정 — 지표를 만들 수 없다")
@@ -674,6 +667,15 @@ def main() -> int:
     feats = daily_features(mdb, todo, date)
     intra = intraday_features(todo, date)
 
+    # 휴장일에는 기록하지 않는다. market_open은 평일 09:00~15:29만 보고 공휴일을 모른다 —
+    # 추석(9/24) 휴장일에 판단 40건이, 8/17엔 30건이 기록돼 채점 표본에 섞였다.
+    # 판정은 당일 분봉이 있는지로 한다. 지수 날짜(FDR·네이버)로 물으면 소스가 하루만 늦어도
+    # 거래일을 휴장으로 보고 통째로 건너뛴다(FDR 지수는 9/17에서 멎었다). 분봉이 하나도
+    # 없으면 어차피 주문은 '가격 없음'으로 전부 빠지고, 기록만 전일 종가 기준으로 남는다.
+    if date == today and not a.dry_run and not intra:
+        log.warning("당일 분봉 0종목 — 휴장이거나 분봉 소스 장애. 판단·주문 모두 건너뛴다")
+        return 0
+
     # 보유 종목은 일봉이 없어도(ETF·상폐 등) 판단에서 빼지 않는다 — AI가 청산을
     # 결정할 수 있어야 한다(안 그러면 영원히 못 파는 좀비). 일봉이 없으면 키움
     # 동기화된 현재가/보유가로 최소 행을 만들어 AI가 보게 한다.
@@ -698,6 +700,8 @@ def main() -> int:
     # 구글 뉴스 헤드라인 + (되면) 기사 본문. 본문은 Jina Reader가 Cloudflare에 막히면
     # 조용히 비고 제목만으로 판단한다. AI_NEWS_BODIES=0으로 아예 끌 수 있다.
     newz = news.fetch_many({t: names.get(t, "") for t in todo}, bodies=_int_env("AI_NEWS_BODIES", 1))
+    if not newz:  # 9/28 10:30엔 14종목 전부 503이었는데 흔적 없이 판단·매도가 나갔다
+        log.warning("뉴스 0종목 — 헤드라인 없이 판단한다")
     rows = [format_row(t, names.get(t, ""), feats[t], intra.get(t), cons.get(t), disc.get(t), newz.get(t)) for t in todo]
     # '네 과거 성과' 문장은 뺐다(2026-10). 최근 200행만 봐서 5일 채점이 끝난 행이 거의 안 잡혔고,
     # 잡힐 때는 BUY 1~5건짜리 원수익률을 "네 성과"로 먹였다. 날짜 20개로 ±3%p도 못 가리는

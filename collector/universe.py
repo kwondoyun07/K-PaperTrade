@@ -1,8 +1,8 @@
-"""KRX 전 종목 목록 — FinanceDataReader KRX 스냅샷.
+"""KRX 전 종목 목록·시총 순위·휴장 판정 — FinanceDataReader KRX 스냅샷.
 
-fdr.StockListing('KRX')는 종목 목록과 함께 최근 거래일의 OHLCV 스냅샷
-(Open/High/Low/Close/Volume, int64·NaN 없음 — 2026-08-01 실측)을 담고 있어
-daily.py의 일봉 폴백 소스로도 재사용한다.
+fdr.StockListing('KRX')는 종목 목록(코드·이름·시장)과 시가총액을 준다. 같이 딸려 오는
+OHLCV는 '캐시가 만들어진 시각'의 값이라 종가가 아니다 — 일봉 소스로 쓰지 않는다
+(쓰던 때 정오 값·시간외 값이 종가로 들어갔다. 일봉은 daily.py가 분봉에서 파생한다).
 """
 
 import os
@@ -20,24 +20,32 @@ CORE_TICKER = os.environ.get("AI_CORE_TICKER") or "069500"
 
 
 def holiday_verdict(date: str, lookback: int = 10) -> str | None:
-    """분봉·당일 FDR이 동시에 빈 날의 휴장 여부. 'holiday' | 'traded' | None(판정 불가).
+    """분봉 프로브가 빈 날의 휴장 여부. 'holiday' | 'traded' | None(판정 불가).
 
-    당일 조회 하나로는 '휴장'과 '소스 장애'가 구분되지 않는다. 그래서 **구간**으로 묻는다:
-    최근 lookback일에 지수 데이터가 있는데 이 날짜만 없으면 휴장이고, 구간이 통째로
-    비면 소스가 죽은 것이다(그때만 판정 불가).
+    **장 마감 뒤(collect)에만 쓴다.** 지수 소스는 장 시작 전엔 당일 행이 없어서, 장중 판단
+    (decide)에 쓰면 거래일을 휴장으로 보고 하루를 통째로 건너뛴다 — decide는 당일 분봉이
+    있는지로 직접 본다.
 
-    daily.py에 있던 것을 여기로 옮겼다 — decide.py도 휴장일엔 판단을 안 하려면 써야 하는데,
-    daily를 import하면 pykrx까지 딸려온다. universe는 fdr만 쓴다.
+    지수 일봉에 그 날짜가 있으면 거래일, 소스가 그 날짜를 덮는데 없으면 휴장이다. FDR이
+    그 날짜까지 못 오면(2026-09-17에서 멎었다 — 그 뒤 거래일 4일을 'holiday'로 오판하는
+    값을 냈다) 네이버 지수로 묻는다. 네이버는 최근 20거래일만 주므로 그보다 옛 날짜는 판정 불가.
     """
     base = datetime.strptime(date, "%Y-%m-%d")
     start = (base - timedelta(days=lookback)).strftime("%Y-%m-%d")
     try:
-        df = fdr.DataReader("KS11", start, date)
+        days = {str(i)[:10] for i in fdr.DataReader("KS11", start, date).index}
     except Exception:
-        return None
-    if df.empty:
-        return None  # 구간이 통째로 빔 = FDR 장애
-    return "traded" if date in {str(i)[:10] for i in df.index} else "holiday"
+        days = set()
+    if not days or max(days) < date:
+        try:
+            from providers.naver import NaverProvider
+
+            days = {r[1] for r in NaverProvider().get_index_prices("KOSPI", 20)}
+        except Exception:
+            return None
+        if not days or date < min(days):
+            return None
+    return "traded" if date in days else "holiday"
 
 
 def krx_listing() -> pd.DataFrame:

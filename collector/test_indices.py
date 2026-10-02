@@ -150,8 +150,8 @@ class RetDB:
     def query(self, sql, args=()):
         return self.closes if "daily_prices" in sql else self.rows
 
-    def execute(self, sql, args=()):
-        self.updates.append((sql, args))
+    def execute_batch(self, stmts):
+        self.updates += stmts
 
 
 CLOSES = [{"date": f"2026-08-{d:02d}", "close": c} for d, c in
@@ -188,12 +188,45 @@ daily.update_ai_returns(_hol, RetDB(closes=CLOSES))
 assert len(_hol.updates) == 1, "라벨만 바뀌어도 써야 한다"
 assert _hol.updates[0][1][0] == "holiday", _hol.updates
 
-# 같은 라벨·새 값 없음이면 쓰지 않는다(매 배치마다 헛 쓰기 금지)
+# 같은 라벨·같은 값이면 쓰지 않는다(매 배치마다 헛 쓰기 금지)
+_d5 = (1200 / 990 - 1) * 100
 _same = RetDB([{"id": 10, "ticker": "005930", "ts": "2026-08-03 10:30",
                 "decision_price": 990.0, "ret_basis": "decision",
-                "ret_d5": 1.0, "ret_d20": 2.0, "ret_d60": None}])
+                "ret_d5": _d5, "ret_d20": 2.0, "ret_d60": None}])
 daily.update_ai_returns(_same, RetDB(closes=CLOSES))
 assert _same.updates == [], _same.updates
+
+# 저장값이 지금 일봉으로 계산한 값과 다르면 다시 쓴다. 예전엔 한 번 쓰면 굳어서, 수집이
+# 정오 스냅샷을 '종가'로 넣은 날 채점된 값이 일봉을 고친 뒤에도 남았다(신뢰 표본의 61%).
+_stale = RetDB([{"id": 12, "ticker": "005930", "ts": "2026-08-03 10:30",
+                 "decision_price": 990.0, "ret_basis": "decision",
+                 "ret_d5": 1.0, "ret_d20": 2.0, "ret_d60": None}])
+daily.update_ai_returns(_stale, RetDB(closes=CLOSES))
+assert len(_stale.updates) == 1 and "ret_d5 = ?" in _stale.updates[0][0], _stale.updates
+assert abs(_stale.updates[0][1][1] - _d5) < 1e-9 and "ret_d20" not in _stale.updates[0][0], _stale.updates
+
+# 정크 라벨(엉뚱한 유니버스로 판단된 행)은 채점하지 않는다 — 건드리면 'decision'으로 되돌아간다
+_junk = RetDB([{"id": 13, "ticker": "005930", "ts": "2026-08-03 10:30",
+                "decision_price": 990.0, "ret_basis": "junk",
+                "ret_d5": None, "ret_d20": None, "ret_d60": None}])
+daily.update_ai_returns(_junk, RetDB(closes=CLOSES))
+assert _junk.updates == [], _junk.updates
+
+
+# n거래일 뒤는 시장 달력으로 센다. 그 종목에 빠진 날이 있다고 다음 행으로 밀리면 안 된다 —
+# 9/8~9/10 일봉이 비었을 때 9/1 판단이 5일 뒤가 아니라 8일 뒤 종가로 채점됐다.
+class CalDB:
+    def query(self, sql, args=()):
+        if args == (daily.CALENDAR_TICKER,):
+            return CLOSES                                    # 달력: 8/3, 4, 5, 6, 7, 10
+        return [c for c in CLOSES if c["date"] != "2026-08-10"] + [{"date": "2026-08-11", "close": 9999}]
+
+
+_gap = RetDB([{"id": 14, "ticker": "000660", "ts": "2026-08-03 10:30",
+               "decision_price": 990.0, "ret_basis": None,
+               "ret_d5": None, "ret_d20": None, "ret_d60": None}])
+daily.update_ai_returns(_gap, CalDB())
+assert _gap.updates == [], f"5거래일 뒤(8/10) 종가가 없는데 다음 행(8/11)으로 채점했다: {_gap.updates}"
 # 라벨 없던 행에 점수 없이 라벨만 붙이면 안 된다 — 신뢰 표본으로 잘못 세어진다
 # (실제로 9/17~9/23의 미채점 203건이 'decision'을 받아 17거래일이 22거래일로 부풀었다)
 _fresh = RetDB([{"id": 11, "ticker": "005930", "ts": "2026-08-07 10:30",   # +5거래일이 아직 없음
@@ -287,6 +320,60 @@ assert parse_investor_flows([]) == []
 one = parse_investor_flows([{"bizdate": "20260911"}])
 assert one == [{"date": "2026-09-11", "individual": 0, "foreigner": 0, "institution": 0}], one
 print("투자자 수급 파싱 테스트 OK")
+
+
+# --- 일봉 = 분봉의 정규장(09:00~15:40) 파생 ---
+# 9/14부터 분봉에 16:00~19:59(시간외) 봉이 있다. 자르지 않으면 20:00 가격이 '종가'가 된다.
+# 15:30에서 자르면 종가가 15:35 봉에서 정해지는 종목이 어긋난다.
+from datetime import datetime  # noqa: E402
+
+from daily import business_date, daily_from_bars  # noqa: E402
+
+
+def _bar(t, hm, o, h, lo, c, v):
+    return {"ticker": t, "ts": f"2026-10-01 {hm}", "open": o, "high": h, "low": lo, "close": c, "volume": v}
+
+
+_bars = pd.DataFrame([
+    _bar("005930", "19:59", 274000, 275000, 273000, 274500, 50),    # 시간외 — 버린다(순서도 섞어 둔다)
+    _bar("005930", "09:00", 270000, 271000, 269000, 270500, 10),
+    _bar("005930", "15:30", 276000, 276500, 275500, 276000, 30),
+    _bar("000660", "15:35", 1800000, 1802000, 1799000, 1801000, 5),  # 15:30 뒤 종가 확정 — 쓴다
+    _bar("000660", "09:01", 1790000, 1795000, 1789000, 1794000, 7),
+    _bar("999999", "16:10", 100, 100, 100, 100, 1),                  # 정규장 봉이 없는 종목 — 행 없음
+])
+assert daily_from_bars(_bars, "2026-10-01") == [
+    ("000660", "2026-10-01", 1790000, 1802000, 1789000, 1801000, 12),
+    ("005930", "2026-10-01", 270000, 276500, 269000, 276000, 40),
+], daily_from_bars(_bars, "2026-10-01")
+
+# 수집 기준일: 밀려서 자정을 넘긴 실행은 전일을 수집한다(다음 날을 '휴장'으로 건너뛰지 않게)
+assert business_date(datetime(2026, 9, 28, 16, 30)) == "2026-09-28"
+assert business_date(datetime(2026, 9, 29, 0, 47)) == "2026-09-28"
+assert business_date(datetime(2026, 9, 29, 8, 59)) == "2026-09-28"
+print("분봉 → 일봉 파생 테스트 OK")
+
+
+# --- 휴장 판정: 멎은 FDR 지수를 믿으면 거래일을 휴장으로 본다 ---
+import universe  # noqa: E402
+
+_u_fdr = universe.fdr.DataReader
+try:
+    _stuck = frame([{"Date": "2026-09-17", "Close": 1.0}])            # FDR은 9/17에서 멎어 있다
+    universe.fdr.DataReader = lambda code, s, e: _stuck
+    _naver.NaverProvider.get_index_prices = lambda self, name, size=20: [
+        (name, "2026-09-23", 1, 1, 1, 1, 0), (name, "2026-09-22", 1, 1, 1, 1, 0), (name, "2026-09-01", 1, 1, 1, 1, 0)]
+    assert universe.holiday_verdict("2026-09-17") == "traded"          # FDR이 그 날짜를 덮으면 FDR로
+    assert universe.holiday_verdict("2026-09-22") == "traded", "FDR이 못 오는 날짜는 네이버로 물어야 한다"
+    assert universe.holiday_verdict("2026-09-24") == "holiday"         # 네이버에도 없다 = 휴장
+    universe.fdr.DataReader = lambda code, s, e: _stuck.iloc[:0]
+    assert universe.holiday_verdict("2026-08-20") is None, "네이버 창(최근 20거래일)보다 옛 날짜는 판정 불가"
+    _naver.NaverProvider.get_index_prices = lambda self, name, size=20: []
+    assert universe.holiday_verdict("2026-09-22") is None, "두 소스가 다 비면 판정 불가(휴장으로 넘기지 않는다)"
+finally:
+    universe.fdr.DataReader = _u_fdr
+    _naver.NaverProvider.get_index_prices = _real_idx
+print("휴장 판정 테스트 OK")
 
 
 print("test_indices OK")
