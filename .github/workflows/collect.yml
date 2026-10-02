@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: "수집 일자 YYYY-MM-DD (기본: 오늘 KST)"
+        description: "수집 일자 YYYY-MM-DD (기본: 직전 장 마감일 = 실행 시각 − 9시간의 날짜)"
         required: false
       skip_minute:
         description: "분봉 수집 건너뛰고 Turso 적재만 (복구·검증용)"

@@ -206,7 +206,7 @@ export default function StockDetail({
               </table>
             ) : (
               <div style={{ padding: "20px 0", textAlign: "center", fontSize: 12, color: "#5C5E68" }}>
-                수급 데이터 없음 — 장 마감 배치(pykrx) 적재 후 표시
+                수급 데이터 없음 — 장 마감 배치 적재 후 표시
               </div>
             )}
           </div>

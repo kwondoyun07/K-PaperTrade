@@ -1,14 +1,14 @@
 """AI 판단 배치 — claude -p로 종목별 BUY/SELL/HOLD를 받아 기록하고 자동 주문한다.
 
 흐름: watchlist(N) → 일봉·분봉 지표 요약 → claude -p(JSON) → 검증 →
-POST /ai-decisions 기록 → 기록 성공분만 상한 판정 → POST /orders → POST /cron/settle.
+POST /ai-decisions 기록 → 기록 성공분만 상한 판정 → POST /orders.
+체결은 키움 모의계좌가 한다 — 이어지는 미러링 스텝(kiwoom_order.py)이 주문을 보내고 잔고를 동기화한다.
 
 LLM은 신뢰 경계 밖이다. 출력은 전부 검증하고(유니버스 밖 종목·알 수 없는
 action·중복 폐기), 수량은 LLM이 아니라 plan_orders가 결정한다. 판단 기록과
 주문 집행을 분리해 둔 이유도 같다 — AI_AUTOTRADE=0이면 주문만 멎고 기록은 남는다.
 
-주문 경로는 fail-closed다. 장중이 아니거나(체결 엔진이 ordered_at 당일 그 이후
-분봉으로만 체결하므로 마감 후 주문은 영원히 PENDING) 계좌 미지정이거나 --date가
+주문 경로는 fail-closed다. 장중이 아니거나(키움은 장중에만 주문을 받는다) 계좌 미지정이거나 --date가
 오늘이 아니면 판단만 기록하고 주문을 생략한다. 주문 판단에 쓰는 GET이 실패해도
 기본값으로 진행하지 않고 중단한다 — 조회 실패는 상한·멱등 키를 통째로 비운다.
 

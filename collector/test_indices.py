@@ -327,7 +327,7 @@ print("투자자 수급 파싱 테스트 OK")
 # 15:30에서 자르면 종가가 15:35 봉에서 정해지는 종목이 어긋난다.
 from datetime import datetime  # noqa: E402
 
-from daily import business_date, daily_from_bars  # noqa: E402
+from daily import after_close, business_date, daily_from_bars  # noqa: E402
 
 
 def _bar(t, hm, o, h, lo, c, v):
@@ -351,6 +351,11 @@ assert daily_from_bars(_bars, "2026-10-01") == [
 assert business_date(datetime(2026, 9, 28, 16, 30)) == "2026-09-28"
 assert business_date(datetime(2026, 9, 29, 0, 47)) == "2026-09-28"
 assert business_date(datetime(2026, 9, 29, 8, 59)) == "2026-09-28"
+# 일봉·스냅샷·체결 확정은 장이 끝난 뒤 시작한 실행만 쓴다(장중 값이 종가로 굳지 않게)
+assert after_close(datetime(2026, 9, 28, 16, 30), "2026-09-28")
+assert not after_close(datetime(2026, 9, 28, 15, 35), "2026-09-28")
+assert not after_close(datetime(2026, 9, 28, 11, 0), "2026-09-28")
+assert after_close(datetime(2026, 9, 29, 0, 47), "2026-09-28"), "자정을 넘긴 전일분 실행"
 print("분봉 → 일봉 파생 테스트 OK")
 
 

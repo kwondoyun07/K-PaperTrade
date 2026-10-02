@@ -309,6 +309,13 @@ assert _sync(_full) == (True, [(5, 250000, 3, 2620, 0)]), "전량 체결이면 �
 assert _sync(_part, final=True) == (True, [(5, 250000, 1, 870, 0)])
 _f, _e = _sync([], final=True)
 assert _f and _e[0][:3] == (5, 240000, 3), _e
+
+# 지난 날 주문(마감 후 동기화가 빠져 PENDING으로 남은 것)은 오늘 체결내역을 붙이지 않고 추정으로 확정한다.
+# 체결 시각은 동기화 시각이 아니라 주문 시각이다.
+_old = SyncDb([{**ORDERS[0], "ordered_at": "2026-08-04 14:31"}])
+ko.sync_from_kiwoom(_old, FillClient(_full), 1, "2026-08-05", final=True)
+_ins = [s[1] for s in _old.batch if "INSERT INTO executions" in s[0]]
+assert _ins[0][:3] == (5, 240000, 3) and _ins[0][5] == "2026-08-04 14:31", _ins
 print("장중 체결 대기 테스트 OK")
 
 # --- ETF 등 daily_prices에 없는 종목: 보유 매입가로 기준가 폴백 ---

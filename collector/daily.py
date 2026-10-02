@@ -118,6 +118,15 @@ def business_date(now: datetime) -> str:
     return (now - timedelta(hours=9)).strftime("%Y-%m-%d")
 
 
+def after_close(started: datetime, date: str) -> bool:
+    """date의 장이 끝난 뒤에 시작한 실행인가. 일봉·스냅샷·체결 확정은 이때만 쓴다.
+
+    장중에 돌리면 그 시각까지의 값이 '종가'로 들어가고(수집은 50분 넘게 걸려 종목마다 잘린
+    시각도 다르다), 아직 체결 전인 주문이 평단 추정으로 굳는다.
+    """
+    return date < started.strftime("%Y-%m-%d") or started.strftime("%H:%M") > SESSION[1]
+
+
 def load_flows(tickers: list[str]) -> dict[str, list[dict]]:
     """종목별 투자자 순매수 **수량**(주) — 네이버가 종목당 최근 10거래일을 준다.
 
@@ -410,9 +419,7 @@ def main() -> int:
     if date > today:
         log.error("%s: 미래 날짜", date)
         return 1
-    # 장이 끝난 뒤에 시작한 실행만 일봉을 쓴다. 장중에 손으로 돌리면 그 시각까지의 값이
-    # '종가'로 들어간다(수집은 50분 넘게 걸려 종목마다 잘린 시각도 다르다).
-    after_close = date < started.strftime("%Y-%m-%d") or started.strftime("%H:%M") > SESSION[1]
+    closed = after_close(started, date)
 
     provider = make_provider(a.provider)
     log.info("프로바이더: %s", type(provider).__name__)
@@ -480,11 +487,11 @@ def main() -> int:
         # 주문 검증이 전부 daily_prices를 본다(없으면 첫 코어 매수가 '기준가 없음'으로 막힌다 —
         # 153130 때와 같은 문제). 이 값은 8/3~10/1 41일 전부 정규장 종가와 같았다.
         try:
-            core = etf_daily_rows(CORE_TICKER, date, date)
+            core = etf_daily_rows(CORE_TICKER, date, date) if closed else []  # 장중 값을 종가로 쓰지 않는다
             if core:
                 db.execute_batch([(DAILY_UPSERT, r) for r in core])
                 log.info("코어 ETF %s 일봉 %d행", CORE_TICKER, len(core))
-            else:
+            elif closed:
                 log.warning("코어 ETF %s 일봉 없음", CORE_TICKER)
         except Exception as e:
             log.warning("코어 ETF 일봉 실패(%s) — 미러링은 보유 매입가로 폴백한다", str(e)[:60])
@@ -533,7 +540,7 @@ def main() -> int:
     # 3) 일봉 — 방금 수집한 분봉의 정규장 봉에서 파생. 분봉을 안 받은 실행(스모크·--skip-minute·
     # 제공범위 밖 과거일)과 장중 실행은 일봉을 쓰지 않는다. 과거분 복구는 backfill_daily.py.
     if db is not None:
-        if a.tickers or skip_minute or not after_close:
+        if a.tickers or skip_minute or not closed:
             log.info("일봉 파생 생략 (스모크·분봉 생략·장중 실행)")
         else:
             rows = [r for r in rows_from_parquet(date, a.out) if r[0] in valid]
@@ -549,9 +556,12 @@ def main() -> int:
         if tdb is None:
             log.warning("TURSO_TRADING_* env 미설정 — 스냅샷·AI 수익률 배치 건너뜀")
         else:
-            # 키움 동기화와 스냅샷은 기준일 실행에서만 한다. 스냅샷은 '지금'의 키움 총자산을
-            # date 15:30에 적으므로, 과거 날짜로 돌리면 그날 곡선이 오늘 값으로 덮인다.
-            if date == today:
+            # 키움 동기화와 스냅샷은 '기준일의 장이 끝난 뒤, 다음 장이 열리기 전'에만 한다.
+            # 스냅샷은 지금의 키움 총자산을 date 15:30에 적는다 — 과거 날짜로 돌리면 그날 곡선이
+            # 오늘 값으로 덮이고, 장중이면 장중 평가가 종가 평가로 남는다. 동기화도 final이라
+            # 장중에 돌면 체결 전인 주문이 평단 추정으로 굳는다. 수집이 50분 넘게 걸리므로
+            # 시작 시각이 아니라 지금 시각으로 다시 본다(08시대 시작분이 09시를 넘긴다).
+            if date == today and closed and business_date(datetime.now(KST)) == today:
                 # ACCOUNT는 웹이 자체 체결하지 않는다 — 키움 미러링(decide 스텝)이 장중에
                 # 키움 잔고를 웹에 반영한다. 마감 후 여기서 한 번 더 동기화해 EOD 값이
                 # 영웅문 S#와 맞게 한다(키움 조회는 마감 후에도 된다). 그 뒤 스냅샷.
@@ -569,10 +579,20 @@ def main() -> int:
                 # 총자산은 키움 추정예탁자산이 기준이고 종가는 그게 없을 때의 폴백일 뿐이라,
                 # 일봉이 비어도(분봉 실패일) 스냅샷은 남긴다 — 곡선에 구멍을 내지 않는다.
                 snapshot_accounts(tdb, {r[0]: r[5] for r in rows}, date)
-            try:
-                update_ai_returns(tdb, db)
-            except Exception as e:
-                log.warning("AI 수익률 배치 실패 — 스킵: %s", e)
+            # 달력 종목의 기준일 일봉이 없으면 채점하지 않는다. 그날이 달력에서 빠져 n거래일 뒤가
+            # 하루씩 밀리고 그날 판단엔 'holiday'가 붙는다(분봉 수집이 앞쪽에서 끊긴 날).
+            if date == today and not db.query(
+                    "SELECT 1 FROM daily_prices WHERE ticker = ? AND date = ?", (CALENDAR_TICKER, date)):
+                log.warning("%s %s 일봉이 아직 없다 — 채점 건너뜀", date, CALENDAR_TICKER)
+            else:
+                try:
+                    update_ai_returns(tdb, db)
+                except Exception as e:
+                    log.warning("AI 수익률 배치 실패 — 스킵: %s", e)
+    if not a.date and not a.tickers and not closed:
+        # 기준일 실행이 장중에 시작됐다(16시간 넘게 밀린 예약 실행 등) — 일봉·스냅샷이 안 쓰였다
+        log.error("%s 장 마감 전에 시작한 수집 — 일봉·스냅샷 없이 끝났다, 실패 처리", date)
+        rc = 1
     return rc
 
 

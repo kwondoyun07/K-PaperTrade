@@ -399,6 +399,10 @@ def parse_fills(rows: list) -> dict[str, dict]:
             continue
         no, px = _ordno(r.get("ord_no")), _num(r.get("cntr_pric"))
         if no and px:
+            if no in out:
+                # 주문당 누적 1행으로 보고 뒤 행을 쓴다(체결가가 평균가 형태로 온다). 건별 행이면
+                # 합산해야 하는데 형식을 실제 응답으로 확인하지 못했다 — 나오면 로그로 가린다.
+                log.warning("체결내역에 주문번호 %s가 여러 행: 수량 %s → %s", no, out[no]["qty"], r.get("cntr_qty"))
             out[no] = {
                 "price": px,
                 "qty": _num(r.get("cntr_qty")),
@@ -470,19 +474,28 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
     # PENDING뿐 아니라 **체결기록이 빠진 FILLED**도 다시 집는다. 전량 매도하면 보유가
     # 사라져 예전 코드가 체결가를 못 구하고 executions를 건너뛴 채 FILLED로 확정해버려,
     # 다시는 복구되지 않았다(주문은 체결됐는데 체결내역·수수료가 화면에 없음).
+    # 마감 후(final)에는 지난 7일의 PENDING도 집는다. 장중에 '체결 대기'로 남긴 주문은 그날
+    # 마감 후 동기화가 못 돌면(수집 실패 등) 다음 날부터 조회에서 빠져 영영 PENDING으로 남는다.
+    since = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d") if final else today
     orders = db.query(
-        "SELECT id, ticker, side, qty, broker_order_id FROM orders o "
-        "WHERE owner_type = 'ACCOUNT' AND owner_id = ? AND substr(ordered_at, 1, 10) = ? "
-        "AND (status = 'PENDING' OR (status = 'FILLED' "
-        "     AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.order_id = o.id)))",
-        (account_id, today),
+        "SELECT id, ticker, side, qty, broker_order_id, ordered_at FROM orders o "
+        "WHERE owner_type = 'ACCOUNT' AND owner_id = ? "
+        "AND ((status = 'PENDING' AND substr(ordered_at, 1, 10) BETWEEN ? AND ?) "
+        "  OR (status = 'FILLED' AND substr(ordered_at, 1, 10) = ? "
+        "      AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.order_id = o.id)))",
+        (account_id, since, today, today),
     )
     real = guessed = waiting = 0
     for o in orders:
         bid = str(o["broker_order_id"] or "")
         oid = int(o["id"])
+        # 체결 시각은 주문 시각으로 적는다(시장가라 분 단위 차이). 동기화 시각을 적으면
+        # 대기했다가 확정된 주문이 몇 시간 뒤 체결된 것처럼 남는다.
+        ordered = str(o.get("ordered_at") or "")
+        at = ordered or now
         if bid and not bid.startswith(("FAILED:", "SKIP:", "SENDING:")):
-            f = fills.get(_ordno(bid))
+            # 체결내역(ka10076)은 당일분만 온다 — 지난 날 주문에 오늘 체결을 붙이지 않는다.
+            f = fills.get(_ordno(bid)) if ordered[:10] in ("", today) else None
             qty = int(o["qty"])
             # 체결 수량 0은 '필드 없음'으로 본다(예전 동작 유지) — 그 밖엔 주문 수량을 채워야 전량 체결.
             if f and (f["qty"] >= qty or f["qty"] == 0):
@@ -506,7 +519,7 @@ def sync_from_kiwoom(db: Turso, client: KiwoomOrderClient, account_id: int, toda
                     "INSERT INTO executions (order_id, price, qty, commission, tax, executed_at) "
                     "SELECT ?, ?, ?, ?, ?, ? "
                     "WHERE NOT EXISTS (SELECT 1 FROM executions WHERE order_id = ?)",
-                    (oid, px, n, cm, tx, now, oid),
+                    (oid, px, n, cm, tx, at, oid),
                 ))
             else:
                 log.warning("주문 #%s 체결가 미상 — 체결내역을 기록하지 못했다", oid)
