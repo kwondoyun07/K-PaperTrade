@@ -77,6 +77,14 @@ function Detail({ d, order }: { d: Decision; order: OrderRow | null }) {
             <span style={{ color: "#8B8D98" }} title="장 끝난 뒤 난 판단 — 그날 움직임을 다 본 값이라 장중 판단과 같은 자로 못 잰다">
               마감 후 판단(측정 제외)
             </span>
+          ) : d.ret_basis === "junk" ? (
+            <span style={{ color: "#8B8D98" }} title="상장목록 결함으로 시총 상위가 아닌 종목이 판단된 사이클 — 채점하지 않는다">
+              판단 대상 오류(측정 제외)
+            </span>
+          ) : d.ret_basis === "holiday" ? (
+            <span style={{ color: "#8B8D98" }} title="휴장일에 난 판단 — 그날 시장 반응이 없어 다른 날과 같은 자로 못 잰다">
+              휴장일 판단(측정 제외)
+            </span>
           ) : scored ? (
             <span style={{ color: "#8B8D98" }} title="같은 날·같은 종목의 BUY와 HOLD가 같은 값을 받는 옛 계산">
               판단일 종가(옛 계산)

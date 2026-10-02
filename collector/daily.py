@@ -1,28 +1,26 @@
 """장 마감 후 일일 배치 — GitHub Actions 평일 16:30 KST 실행 진입점.
 
-1) 일봉(전 종목)·투자자별 순매수·지수 → Turso krx_market (전부 upsert, 멱등)
+1) 수급·지수·코어 ETF 일봉 → Turso krx_market (전부 upsert, 멱등)
 2) 당일 전 종목 1분봉 → 일자별 parquet → GitHub Release(minute-YYYY-MM)
-3) minute_prices 롤링 캐시 정리(10일 이전 행 삭제 — 5거래일 + 휴일 여유)
+3) 그 분봉의 정규장(09:00~15:40) 봉에서 일봉을 파생 → daily_prices
+4) 키움 잔고 동기화·계좌 스냅샷·AI 판단 채점
 
-Turso 적재를 분봉보다 먼저 실행한다 — 소스가 서로 무관하므로 분봉(가장 오래
-걸리고 깨지기 쉬움) 실패가 일봉·수급·지수 적재를 막지 않게.
+일봉 소스는 **자체 분봉 하나뿐**이다(docs/data-pipeline.md). 예전엔 pykrx → FDR 상장목록
+스냅샷 → 분봉 순이었는데, pykrx가 죽은 뒤로는 '수집 시각의 캐시 스냅샷'이 그대로 종가로
+들어갔다 — 16:30 수집은 정오 값, 밤 수집은 시간외 값이었다(2026-10 진단).
 
-업스트림 내구성 (2026-08-01 실측 기준):
-- 휴장 판정: 네이버 분봉(005930) + FDR KS11 + (둘 다 비면) pykrx 3중 확인 — 소스가
-  동시에 죽어도 거래일을 휴장으로 오판해 하루치를 통째로 건너뛰지 않게
-- 일봉: pykrx 벌크 1순위 → FDR KRX 스냅샷(당일만) → 방금 수집한 분봉에서 파생(최후).
-  분봉 파생은 수집이 끝난 뒤에 시도하므로 순서상 마지막에 복구된다
-- 지수: FDR(KS11/KQ11, 네이버 소스) 단독 — pykrx 지수 API는 빈 응답 확인됨.
-  DB에는 code='KOSPI'/'KOSDAQ'로 넣는다(웹 조회 키). 실패는 rc=1 — 벤치마크 필수
-  데이터라 조용히 비면 알파를 못 잰다. 과거분은 backfill_indices.py
-- 수급: pykrx만 가능 — 실패 시 경고 후 스킵(보조 데이터, 과거분 갭 허용)
+- 휴장 판정: 분봉 프로브(005930)가 비면 지수 날짜(FDR → 네이버)로 묻는다.
+- 지수: FDR(KS11/KQ11) → 네이버 폴백. DB에는 code='KOSPI'/'KOSDAQ'(웹 조회 키).
+  실패는 rc=1 — 벤치마크 필수 데이터다. 과거분은 backfill_indices.py
+- 수급: 네이버 종목별(시총 상위 30) — 실패 시 경고 후 스킵(보조 데이터)
 
+기준일은 '실행 시각 − 9시간'의 날짜다 — 밀려서 자정을 넘긴 실행이 다음 날을 수집하지 않게.
 휴장일이면 아무것도 하지 않고 0으로 종료. TURSO env 미설정이면 적재만 건너뜀.
 
 사용:
-  uv run python daily.py                          # 오늘(KST) 기준
-  uv run python daily.py --date 2026-07-31
-  uv run python daily.py --tickers 005930 --skip-upload   # 스모크
+  uv run python daily.py                          # 직전 장 마감일 기준
+  uv run python daily.py --date 2026-07-31        # 과거일: 분봉·지수만(스냅샷·키움 동기화 없음)
+  uv run python daily.py --tickers 005930 --skip-upload   # 스모크(일봉은 안 쓴다)
 """
 
 import argparse
@@ -34,7 +32,6 @@ from zoneinfo import ZoneInfo
 
 import FinanceDataReader as fdr
 import pandas as pd
-from pykrx import stock as krx
 
 from backfill import collect_minutes
 from providers import make_provider
@@ -46,6 +43,8 @@ KST = ZoneInfo("Asia/Seoul")
 log = logging.getLogger(__name__)
 
 INDICES = (("KS11", "KOSPI"), ("KQ11", "KOSDAQ"))
+# 채점의 거래일 달력으로 쓰는 종목. 거래정지가 사실상 없고 일봉 이력이 가장 길다.
+CALENDAR_TICKER = "005930"
 
 DAILY_UPSERT = (
     "INSERT INTO daily_prices (ticker, date, open, high, low, close, volume) "
@@ -62,7 +61,6 @@ INDEX_UPSERT = (
 )
 
 
-# 휴장 판정은 universe로 옮겼다 — decide.py도 쓰는데 daily를 import하면 pykrx가 딸려온다.
 def upsert_stocks(db: Turso, stocks: list[dict], now: str) -> None:
     db.execute_batch(
         [
@@ -81,48 +79,52 @@ def upsert_stocks(db: Turso, stocks: list[dict], now: str) -> None:
     log.info("stocks upsert: %d행 (+미등재 종목 비활성화)", len(stocks))
 
 
-def rows_from_parquet(date: str, out_dir: str | Path) -> list[tuple]:
-    """방금 수집한 분봉에서 일봉을 파생 — pykrx·FDR이 모두 막혔을 때의 최후 수단.
+# 정규장 창. 2026-09-14부터 분봉에 16:00~19:59(시간외) 봉이 있어, 자르지 않으면 20:00 가격이
+# '종가'가 된다. 15:30이 아니라 15:40인 이유: 종가가 15:32·15:35 봉에서 정해지는 종목이 하루
+# 3~12개 있다. 이 창의 파생값은 금융위 확정 시세와 전 종목 시·고·저·종이 일치한다(9/30 2,571종목).
+SESSION = ("09:00", "15:40")
 
-    시가=첫 분봉 시가, 고/저=최대/최소, 종가=마지막 분봉 종가(15:30 종가단일가),
-    거래량=합계. 장외·시간외 거래가 빠지므로 KRX 공식 일봉과 거래량이 미세하게
-    다를 수 있다 — 그래도 일봉이 통째로 비는 것보다 낫다(분봉은 소급 수집 불가).
+
+def daily_from_bars(df: pd.DataFrame, date: str) -> list[tuple]:
+    """분봉(ticker, ts, open, high, low, close, volume) → 일봉 upsert 인자. 순수 함수.
+
+    시가=첫 봉 시가, 고/저=최대/최소, 종가=정규장 마지막 봉 종가, 거래량=정규장 합계.
+    거래량은 시간외분이 빠져 공식 거래량의 약 0.97배다. 그날 정규장 봉이 없는 종목(거래정지
+    등)은 행이 없다.
     """
+    hm = df["ts"].str[11:16]
+    df = df[(hm >= SESSION[0]) & (hm <= SESSION[1])].sort_values("ts")
+    return [
+        (str(t), date, int(g["open"].iloc[0]), int(g["high"].max()),
+         int(g["low"].min()), int(g["close"].iloc[-1]), int(g["volume"].sum()))
+        for t, g in df.groupby("ticker", sort=True)
+    ]
+
+
+def rows_from_parquet(date: str, out_dir: str | Path) -> list[tuple]:
+    """방금 수집한 그날 분봉 parquet에서 일봉을 파생한다. 파일이 없으면 빈 리스트."""
     p = Path(out_dir) / f"minute-{date}.parquet"
     if not p.exists():
         return []
-    df = pd.read_parquet(p).sort_values("ts")
-    rows = []
-    for tkr, g in df.groupby("ticker", sort=True):
-        rows.append(
-            (str(tkr), date, int(g["open"].iloc[0]), int(g["high"].max()),
-             int(g["low"].min()), int(g["close"].iloc[-1]), int(g["volume"].sum()))
-        )
-    log.warning("분봉에서 일봉 파생: %d종목 (거래량은 장중 합계)", len(rows))
-    return rows
+    return daily_from_bars(pd.read_parquet(p), date)
 
 
-def daily_price_rows(date: str, date8: str, today: str, listing, out_dir: str | Path) -> list[tuple]:
-    """일봉 수집: pykrx 벌크 → FDR 스냅샷(당일만) → 분봉 파생(최후)."""
-    try:
-        df = krx.get_market_ohlcv(date8, market="ALL")
-        if df.empty:
-            raise ValueError("빈 응답")
-        return [
-            (str(t), date, int(r["시가"]), int(r["고가"]), int(r["저가"]),
-             int(r["종가"]), int(r["거래량"]))
-            for t, r in df.iterrows()
-        ]
-    except Exception as e:
-        log.warning("pykrx 일봉 실패(%s) — 폴백 시도", e)
-    if date == today and listing is not None:
-        # 스냅샷은 최근 거래일 값이라 과거 일자엔 못 쓴다.
-        # listing이 None이면 상장목록 폴백 경로 — 분봉 파생에 맡긴다.
-        return [
-            (str(r.Code), date, int(r.Open), int(r.High), int(r.Low), int(r.Close), int(r.Volume))
-            for r in listing.itertuples()
-        ]
-    return rows_from_parquet(date, out_dir)
+def business_date(now: datetime) -> str:
+    """수집 기준일 = 실행 시각 − 9시간의 날짜. 16:30 실행은 당일, 밀려서 자정을 넘긴 실행은 전일.
+
+    그냥 오늘 날짜를 쓰면 00:47에 도착한 전일분 실행이 '오늘'을 수집하려다 분봉이 없어
+    휴장으로 판정하고 초록으로 끝난다 — 8/28·9/1에 그렇게 거래일이 통째로 빠졌다.
+    """
+    return (now - timedelta(hours=9)).strftime("%Y-%m-%d")
+
+
+def after_close(started: datetime, date: str) -> bool:
+    """date의 장이 끝난 뒤에 시작한 실행인가. 일봉·스냅샷·체결 확정은 이때만 쓴다.
+
+    장중에 돌리면 그 시각까지의 값이 '종가'로 들어가고(수집은 50분 넘게 걸려 종목마다 잘린
+    시각도 다르다), 아직 체결 전인 주문이 평단 추정으로 굳는다.
+    """
+    return date < started.strftime("%Y-%m-%d") or started.strftime("%H:%M") > SESSION[1]
 
 
 def load_flows(tickers: list[str]) -> dict[str, list[dict]]:
@@ -331,6 +333,14 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
 
     체결가(executions.price)는 일부러 안 쓴다 — 실제 체결가가 맞지만 주문이 난 판단에만
     있어서, HOLD와 SELL은 기준가가 없어진다. 판단 시점 가격이어야 셋을 같은 자로 잰다.
+
+    n거래일 뒤는 **시장 달력**으로 센다(CALENDAR_TICKER의 일봉 날짜). 종목별 행 번호로 세면
+    그 종목에 빠진 날이 있을 때 조용히 하루씩 밀린다 — 9/8~9/10 일봉이 비었을 때 9/1 판단
+    30건이 5일 뒤가 아니라 8일 뒤 종가로 채점됐다. 목표일에 그 종목 종가가 없으면 쓰지 않는다.
+
+    값이 비었을 때만 쓰는 게 아니라 **계산값이 저장값과 다르면 다시 쓴다**(60일 값이 찰 때까지).
+    예전엔 한 번 쓰면 굳어서, 틀린 일봉으로 채점된 값이 일봉을 고쳐도 남았다(신뢰 표본의 61%).
+    ret_basis='junk'(유니버스 결함으로 판단된 엉뚱한 종목)는 건드리지 않는다.
     """
     from bisect import bisect_left
 
@@ -340,25 +350,27 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
     )
     if not pending:
         return
+    cal = [str(r["date"]) for r in mdb.query(
+        "SELECT date FROM daily_prices WHERE ticker = ? ORDER BY date", (CALENDAR_TICKER,))]
     by_ticker: dict[str, list[dict]] = {}
     for d in pending:
-        by_ticker.setdefault(str(d["ticker"]), []).append(d)
-    updated = fallback = late = 0
+        if d.get("ret_basis") != "junk":
+            by_ticker.setdefault(str(d["ticker"]), []).append(d)
+    stmts: list[tuple] = []
+    fallback = late = 0
     for ticker, items in by_ticker.items():
-        closes = mdb.query(
-            "SELECT date, close FROM daily_prices WHERE ticker = ? ORDER BY date", (ticker,)
-        )
-        dates = [str(r["date"]) for r in closes]
+        px = {str(r["date"]): float(r["close"]) for r in mdb.query(
+            "SELECT date, close FROM daily_prices WHERE ticker = ? ORDER BY date", (ticker,))}
         for d in items:
-            idx = bisect_left(dates, str(d["ts"])[:10])
-            if idx >= len(dates):
-                continue
             dday = str(d["ts"])[:10]
+            idx = bisect_left(cal, dday)
+            if idx >= len(cal):
+                continue
             base = float(d["decision_price"] or 0)
             basis = "decision"
             if base <= 0:
-                base, basis = float(closes[idx]["close"]), "close"
-            elif dates[idx] != dday:
+                base, basis = px.get(cal[idx], 0.0), "close"
+            elif cal[idx] != dday:
                 # 판단일이 거래일이 아니다(휴장). 그날 시장 반응이 없어 기준일이 어긋나고,
                 # bisect가 다음 거래일을 집어 수익률이 하루씩 밀린다. 측정에서 뺀다.
                 basis = "holiday"
@@ -366,9 +378,13 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
                 basis = "postclose"  # 기준가는 있지만 장 끝나고 본 값이다
             sets, args = ["ret_basis = ?"], [basis]
             for n, col in ((5, "ret_d5"), (20, "ret_d20"), (60, "ret_d60")):
-                if d[col] is None and idx + n < len(dates) and base > 0:
+                close = px.get(cal[idx + n]) if idx + n < len(cal) else None
+                if not close or base <= 0:
+                    continue
+                new = (close / base - 1) * 100
+                if d[col] is None or abs(new - float(d[col])) > 1e-9:
                     sets.append(f"{col} = ?")
-                    args.append((int(closes[idx + n]["close"]) / base - 1) * 100)
+                    args.append(new)
             # 이미 붙은 라벨이 틀렸으면 새 값 없이도 고쳐 쓴다. 예전엔 새 수익률이 채워질 때만
             # 써서, 5·20일 값이 있는 판단은 60일 값이 나오는 두 달 뒤까지 라벨이 안 바뀌었다
             # (8/17 휴장일 30건이 'decision'으로 남았다). 단 **라벨이 없던 행엔 붙이지 않는다** —
@@ -376,62 +392,57 @@ def update_ai_returns(tdb: Turso, mdb: Turso) -> None:
             # 17거래일이 22거래일로 부풀었다). 첫 점수가 들어올 때 같이 쓰면 된다.
             relabel = d.get("ret_basis") is not None and d.get("ret_basis") != basis
             if len(sets) > 1 or relabel:
-                tdb.execute(f"UPDATE ai_decisions SET {', '.join(sets)} WHERE id = ?", (*args, int(d["id"])))
-                updated += 1
+                stmts.append((f"UPDATE ai_decisions SET {', '.join(sets)} WHERE id = ?", (*args, int(d["id"]))))
                 fallback += basis == "close"
                 late += basis in ("postclose", "holiday")
+    if stmts:
+        tdb.execute_batch(stmts)
     log.info("ai_decisions 수익률 갱신: %d건 (기준가 폴백 %d건, 마감 후·휴장일 판단 %d건 — 측정에서 제외)",
-             updated, fallback, late)
+             len(stmts), fallback, late)
 
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # 요청당 INFO 로그 억제
     p = argparse.ArgumentParser(description="장 마감 후 일일 수집 배치")
-    p.add_argument("--date", help="YYYY-MM-DD (기본: 오늘 KST)")
-    p.add_argument("--tickers", help="쉼표 구분 티커 — 스모크 테스트용")
+    p.add_argument("--date", help="YYYY-MM-DD (기본: 직전 장 마감일 = 실행 시각 − 9시간의 날짜)")
+    p.add_argument("--tickers", help="쉼표 구분 티커 — 스모크 테스트용(일봉은 쓰지 않는다)")
     p.add_argument("--out", default="data/minute")
     p.add_argument("--provider", choices=["kiwoom", "naver"], help="기본: 키움(키 있으면)")
-    p.add_argument("--skip-minute", action="store_true")
+    p.add_argument("--skip-minute", action="store_true", help="분봉 수집 생략 — 일봉도 쓰지 않는다")
     p.add_argument("--skip-upload", action="store_true")
     a = p.parse_args()
 
-    today = datetime.now(KST).strftime("%Y-%m-%d")
+    started = datetime.now(KST)
+    today = business_date(started)
     date = a.date or today
-    date8 = date.replace("-", "")
     if date > today:
         log.error("%s: 미래 날짜", date)
         return 1
+    closed = after_close(started, date)
 
     provider = make_provider(a.provider)
     log.info("프로바이더: %s", type(provider).__name__)
     skip_minute = a.skip_minute
     rc = 0
 
-    # 휴장·제공범위 판정: 분봉 프로브(005930) + KS11 교차 확인
+    # 휴장·제공범위 판정: 분봉 프로브(005930)가 비면 지수 날짜로 묻는다.
+    # 요일로 판정하지 않는 이유: 공휴일도 평일이라 매 명절마다 CI가 빨개진다.
     if not provider.get_minute_bars("005930", date):
         skip_minute = True
-        if not fdr.DataReader("KS11", date, date).empty:
-            if date == today:
-                log.error("%s 거래일인데 분봉 없음 — 업스트림 이상, 실패 처리", date)
-                return 1
-            log.warning("%s 분봉 없음(프로바이더 제공범위 밖) — 분봉 스킵, 나머지 진행", date)
-        else:
-            # 두 소스가 동시에 비면 휴장인지 업스트림 동시 장애인지 구분이 안 된다.
-            # 여기서 잘못 휴장으로 넘기면 일봉·수급·지수·스냅샷이 전부 스킵되고 rc=0이라
-            # 아무도 모른다. 독립 소스(pykrx/KRX 포털)에 한 번 더 물어 확정한다.
-            # 요일로 판정하지 않는 이유: 공휴일도 평일이라 매 명절마다 CI가 빨개진다.
-            verdict = holiday_verdict(date)
-            if verdict == "holiday":
-                log.info("%s 휴장일 — 종료", date)
-                return 0
-            if verdict is None:
-                log.error("%s 휴장 판정 불가(분봉·FDR 동시 결손) — 실패 처리", date)
-                return 1
-            # 거래일 확정. 일봉은 아래에서 pykrx로 받으니 진행하되, 분봉·지수 소스가
-            # 동시에 죽은 비정상 상태라 조용히 넘기지 않는다.
-            log.error("%s 거래일(pykrx 확인)인데 분봉·FDR 동시 결손 — 진행하되 실패 처리", date)
-            rc = 1
+        verdict = holiday_verdict(date)
+        if verdict == "holiday":
+            log.info("%s 휴장일 — 종료", date)
+            return 0
+        if verdict is None:
+            # 휴장인지 소스 동시 장애인지 구분이 안 된다. 휴장으로 넘기면 수급·지수·스냅샷이
+            # 전부 스킵되고 rc=0이라 아무도 모른다.
+            log.error("%s 휴장 판정 불가(분봉·지수 동시 결손) — 실패 처리", date)
+            return 1
+        if date == today:
+            log.error("%s 거래일인데 분봉 없음 — 업스트림 이상, 실패 처리", date)
+            return 1
+        log.warning("%s 분봉 없음(프로바이더 제공범위 밖) — 분봉·일봉 스킵, 나머지 진행", date)
 
     # 상장목록이 죽어도 수집은 계속한다 — 9/8~9/10엔 이 호출 하나로 collect가
     # 사흘 내리 실패해 일봉·지수·자산 스냅샷이 통째로 비었다. 이름 갱신만 건너뛰고
@@ -455,9 +466,13 @@ def main() -> int:
     if a.tickers:
         tickers = [t.strip() for t in a.tickers.split(",") if t.strip()]
     else:
-        tickers = [s["ticker"] for s in stocks]
+        # 코어 ETF는 분봉도 받는다 — 계좌의 70%인데 분봉이 없으면 체결가를 나중에 대조할
+        # 방법이 없다. 일봉은 아래 etf_daily_rows가 계속 맡는다(valid에는 넣지 않는다).
+        tickers = [s["ticker"] for s in stocks] + [CORE_TICKER]
+    valid = {s["ticker"] for s in stocks}
+    rows: list[tuple] = []
 
-    # 1) 일봉·수급·지수 → Turso
+    # 1) 수급·지수·코어 ETF 일봉 → Turso
     if db is None:
         log.warning("TURSO_KRX_MARKET_* env 미설정 — Turso 적재 건너뜀")
     else:
@@ -468,25 +483,15 @@ def main() -> int:
         if listing is not None:
             upsert_stocks(db, stocks + etf_stocks(), now)
 
-        valid = {s["ticker"] for s in stocks}
-        rows = [r for r in daily_price_rows(date, date8, today, listing, a.out) if r[0] in valid]
-        if rows:
-            db.execute_batch([(DAILY_UPSERT, r) for r in rows])
-            log.info("daily_prices upsert: %d행", len(rows))
-        else:
-            # 아직 실패로 확정하지 않는다 — 분봉 수집 후 파생 폴백이 남아 있다
-            log.warning("일봉 0행 — 분봉 수집 후 파생 재시도 예정")
-
-        # 코어 ETF만은 일봉을 받는다 — ETF 제외 규칙의 **단일 예외**. 미러링 기준가·평가·
+        # 코어 ETF 일봉은 종목 조회로 받는다 — ETF 제외 규칙의 **단일 예외**. 미러링 기준가·평가·
         # 주문 검증이 전부 daily_prices를 본다(없으면 첫 코어 매수가 '기준가 없음'으로 막힌다 —
-        # 153130 때와 같은 문제). 상장목록 스냅샷엔 ETF가 없고, 분봉 파생 폴백은 전체가
-        # 0행일 때만 돌아서 따로 받는다. 1종목이라 수집 시간엔 영향이 없다.
+        # 153130 때와 같은 문제). 이 값은 8/3~10/1 41일 전부 정규장 종가와 같았다.
         try:
-            core = etf_daily_rows(CORE_TICKER, date, date)
+            core = etf_daily_rows(CORE_TICKER, date, date) if closed else []  # 장중 값을 종가로 쓰지 않는다
             if core:
                 db.execute_batch([(DAILY_UPSERT, r) for r in core])
                 log.info("코어 ETF %s 일봉 %d행", CORE_TICKER, len(core))
-            else:
+            elif closed:
                 log.warning("코어 ETF %s 일봉 없음", CORE_TICKER)
         except Exception as e:
             log.warning("코어 ETF 일봉 실패(%s) — 미러링은 보유 매입가로 폴백한다", str(e)[:60])
@@ -532,43 +537,62 @@ def main() -> int:
                 log.error("release 업로드 실패: %s", e)
                 rc = 1
 
-    # 3) 일봉 최후 폴백 — pykrx·FDR이 모두 막혔으면 방금 수집한 분봉에서 파생
+    # 3) 일봉 — 방금 수집한 분봉의 정규장 봉에서 파생. 분봉을 안 받은 실행(스모크·--skip-minute·
+    # 제공범위 밖 과거일)과 장중 실행은 일봉을 쓰지 않는다. 과거분 복구는 backfill_daily.py.
     if db is not None:
-        if not rows and not a.tickers:
+        if a.tickers or skip_minute or not closed:
+            log.info("일봉 파생 생략 (스모크·분봉 생략·장중 실행)")
+        else:
             rows = [r for r in rows_from_parquet(date, a.out) if r[0] in valid]
             if rows:
                 db.execute_batch([(DAILY_UPSERT, r) for r in rows])
-                log.info("daily_prices upsert(분봉 파생): %d행", len(rows))
-        if not rows:
-            log.error("거래일인데 daily_prices 0행 — 실패 처리")
-            rc = 1
+                log.info("daily_prices upsert(분봉 정규장 파생): %d행", len(rows))
+            else:
+                log.error("거래일인데 daily_prices 0행 — 실패 처리")
+                rc = 1
 
         # 4) 계좌 스냅샷 + AI 판단 수익률 배치 (trading DB)
         tdb = Turso.from_env("TRADING")
         if tdb is None:
             log.warning("TURSO_TRADING_* env 미설정 — 스냅샷·AI 수익률 배치 건너뜀")
         else:
-            # ACCOUNT는 웹이 자체 체결하지 않는다 — 키움 미러링(decide 스텝)이 장중에
-            # 키움 잔고를 웹에 반영한다. 마감 후 여기서 한 번 더 동기화해 EOD 값이
-            # 영웅문 S#와 맞게 한다(키움 조회는 마감 후에도 된다). 그 뒤 스냅샷.
-            import os
+            # 키움 동기화와 스냅샷은 '기준일의 장이 끝난 뒤, 다음 장이 열리기 전'에만 한다.
+            # 스냅샷은 지금의 키움 총자산을 date 15:30에 적는다 — 과거 날짜로 돌리면 그날 곡선이
+            # 오늘 값으로 덮이고, 장중이면 장중 평가가 종가 평가로 남는다. 동기화도 final이라
+            # 장중에 돌면 체결 전인 주문이 평단 추정으로 굳는다. 수집이 50분 넘게 걸리므로
+            # 시작 시각이 아니라 지금 시각으로 다시 본다(08시대 시작분이 09시를 넘긴다).
+            if date == today and closed and business_date(datetime.now(KST)) == today:
+                # ACCOUNT는 웹이 자체 체결하지 않는다 — 키움 미러링(decide 스텝)이 장중에
+                # 키움 잔고를 웹에 반영한다. 마감 후 여기서 한 번 더 동기화해 EOD 값이
+                # 영웅문 S#와 맞게 한다(키움 조회는 마감 후에도 된다). 그 뒤 스냅샷.
+                import os
 
-            acct = int(os.environ.get("AI_ACCOUNT_ID") or 0)
-            if acct and os.environ.get("KIWOOM_APP_KEY"):
-                try:
-                    import kiwoom_order as ko
+                acct = int(os.environ.get("AI_ACCOUNT_ID") or 0)
+                if acct and os.environ.get("KIWOOM_APP_KEY"):
+                    try:
+                        import kiwoom_order as ko
 
-                    ko.sync_from_kiwoom(tdb, ko.KiwoomOrderClient(), acct, date)
-                except Exception as e:
-                    log.warning("키움 잔고 동기화 실패 — 스킵: %s", e)
-            if rows:
+                        # final: 장중 동기화가 미체결이라 비워 둔 체결 기록을 여기서 확정한다
+                        ko.sync_from_kiwoom(tdb, ko.KiwoomOrderClient(), acct, date, final=True)
+                    except Exception as e:
+                        log.warning("키움 잔고 동기화 실패 — 스킵: %s", e)
+                # 총자산은 키움 추정예탁자산이 기준이고 종가는 그게 없을 때의 폴백일 뿐이라,
+                # 일봉이 비어도(분봉 실패일) 스냅샷은 남긴다 — 곡선에 구멍을 내지 않는다.
                 snapshot_accounts(tdb, {r[0]: r[5] for r in rows}, date)
+            # 달력 종목의 기준일 일봉이 없으면 채점하지 않는다. 그날이 달력에서 빠져 n거래일 뒤가
+            # 하루씩 밀리고 그날 판단엔 'holiday'가 붙는다(분봉 수집이 앞쪽에서 끊긴 날).
+            if date == today and not db.query(
+                    "SELECT 1 FROM daily_prices WHERE ticker = ? AND date = ?", (CALENDAR_TICKER, date)):
+                log.warning("%s %s 일봉이 아직 없다 — 채점 건너뜀", date, CALENDAR_TICKER)
             else:
-                log.warning("일봉 0행 — 계좌 스냅샷 건너뜀")
-            try:
-                update_ai_returns(tdb, db)
-            except Exception as e:
-                log.warning("AI 수익률 배치 실패 — 스킵: %s", e)
+                try:
+                    update_ai_returns(tdb, db)
+                except Exception as e:
+                    log.warning("AI 수익률 배치 실패 — 스킵: %s", e)
+    if not a.date and not a.tickers and not closed:
+        # 기준일 실행이 장중에 시작됐다(16시간 넘게 밀린 예약 실행 등) — 일봉·스냅샷이 안 쓰였다
+        log.error("%s 장 마감 전에 시작한 수집 — 일봉·스냅샷 없이 끝났다, 실패 처리", date)
+        rc = 1
     return rc
 
 

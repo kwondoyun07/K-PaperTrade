@@ -269,7 +269,7 @@ ORDERS = [
     {"id": 7, "ticker": "000660", "side": "SELL", "qty": 2, "broker_order_id": ""},         # 미전송 → PENDING 유지
 ]
 sdb = SyncDb(ORDERS)
-ko.sync_from_kiwoom(sdb, SyncClient(), 1, "2026-08-05")
+ko.sync_from_kiwoom(sdb, SyncClient(), 1, "2026-08-05", final=True)  # 마감 후: 체결내역이 없으면 평단 추정
 sqls = [s[0] for s in sdb.batch]
 assert sdb.batch[0] == ("UPDATE accounts SET cash = ?, est_asset = ? WHERE id = ?", (9500000, 9800000, 1)), sdb.batch[0]
 assert any("DELETE FROM positions" in s for s in sqls)
@@ -279,6 +279,44 @@ assert any("status = 'FILLED'" in s for s in sqls), "키움 접수분 FILLED"
 assert any("status = 'REJECTED'" in s for s in sqls), "미전송분 REJECTED"
 assert not any("id = ? AND status = 'PENDING'" in s and s[1] == (7,) for s in sdb.batch), "미전송(빈) 주문은 손대지 않음"
 print("키움→웹 동기화 테스트 OK")
+
+
+# --- 장중 동기화는 체결이 확인된 주문만 기록한다 ---
+# 동기화는 주문 3초 뒤에 한 번 돈다. 그때 아직 체결 전인 주문을 평단으로 추정해 적으면
+# NOT EXISTS 가드 때문에 다시는 못 고친다 — #51은 379,000원 체결이 387,000원(전날 매수가)으로,
+# #67은 수수료·세금이 6주 중 2주분으로 굳었다.
+class FillClient(SyncClient):
+    def __init__(self, rows):
+        self.rows = rows
+
+    def fills(self):
+        return self.rows
+
+
+def _sync(rows, final=False):
+    db = SyncDb([ORDERS[0]])  # 005930 BUY 3주, 주문번호 0001234, 보유 평단 240,000
+    ko.sync_from_kiwoom(db, FillClient(rows), 1, "2026-08-05", final=final)
+    filled = any("status = 'FILLED'" in s[0] for s in db.batch)
+    return filled, [s[1][:5] for s in db.batch if "INSERT INTO executions" in s[0]]
+
+
+_part = [{"ord_no": "0001234", "cntr_pric": "250000", "cntr_qty": "1", "tdy_trde_cmsn": "870", "tdy_trde_tax": "0"}]
+_full = [{"ord_no": "0001234", "cntr_pric": "250000", "cntr_qty": "3", "tdy_trde_cmsn": "2620", "tdy_trde_tax": "0"}]
+assert _sync([]) == (False, []), "체결내역에 없으면 아무것도 쓰지 않는다(PENDING 유지 — 다음 동기화가 집는다)"
+assert _sync(_part) == (False, []), "일부만 체결됐으면 기다린다"
+assert _sync(_full) == (True, [(5, 250000, 3, 2620, 0)]), "전량 체결이면 실제 체결가·수수료"
+# 마감 후는 그날의 마지막 기회다 — 체결 행이 있으면 그 값(체결된 만큼), 없을 때만 평단 추정
+assert _sync(_part, final=True) == (True, [(5, 250000, 1, 870, 0)])
+_f, _e = _sync([], final=True)
+assert _f and _e[0][:3] == (5, 240000, 3), _e
+
+# 지난 날 주문(마감 후 동기화가 빠져 PENDING으로 남은 것)은 오늘 체결내역을 붙이지 않고 추정으로 확정한다.
+# 체결 시각은 동기화 시각이 아니라 주문 시각이다.
+_old = SyncDb([{**ORDERS[0], "ordered_at": "2026-08-04 14:31"}])
+ko.sync_from_kiwoom(_old, FillClient(_full), 1, "2026-08-05", final=True)
+_ins = [s[1] for s in _old.batch if "INSERT INTO executions" in s[0]]
+assert _ins[0][:3] == (5, 240000, 3) and _ins[0][5] == "2026-08-04 14:31", _ins
+print("장중 체결 대기 테스트 OK")
 
 # --- ETF 등 daily_prices에 없는 종목: 보유 매입가로 기준가 폴백 ---
 # 실측: 153130(채권 ETF)이 매일 SELL 판정을 받고도 daily_prices에 0행이라 기준가가
